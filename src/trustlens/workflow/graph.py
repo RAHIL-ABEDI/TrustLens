@@ -194,8 +194,8 @@ async def map_evidence(state: dict) -> dict:
         if r.get("snippet", "").strip() and len(r.get("snippet", "").strip()) >= 10
     ]
 
-    # Cap at 15 classifications to limit Gemini calls
-    results_to_classify = results_to_classify[:15]
+    # Cap at 7 classifications to limit Gemini calls (free tier is 15 RPM)
+    results_to_classify = results_to_classify[:7]
 
     for idx, result in enumerate(results_to_classify):
         passage = result["snippet"]
@@ -214,11 +214,13 @@ async def map_evidence(state: dict) -> dict:
 
             source = Source(
                 url=result.get("url", ""),
-                domain=normalize_domain(result.get("source", "")),
+                hostname=result.get("hostname", ""),
                 title=result.get("title", ""),
                 source_type=_infer_source_type(
                     SearchEngineType(result.get("engine", "GOOGLE_SEARCH"))
                 ),
+                publication_date=result.get("publication_date"),
+                engagement_metadata=result.get("engagement_metadata"),
                 retrieved_at=datetime.now(timezone.utc),
                 snippet=passage,
             )
@@ -287,12 +289,11 @@ async def detect_gaps(state: dict) -> dict:
 
     gaps: list[dict] = []
     for finding in claim_findings:
-        total_evidence = (
+        direct_evidence = (
             len(finding.get("supporting_evidence", []))
             + len(finding.get("contradicting_evidence", []))
-            + len(finding.get("neutral_evidence", []))
         )
-        if total_evidence == 0:
+        if direct_evidence == 0:
             gap = EvidenceGap(
                 claim_id=finding["claim_id"],
                 claim_text=finding["claim_text"],
@@ -340,7 +341,7 @@ async def targeted_search(state: dict) -> dict:
             results = await serpapi.search(engine=engine, query=query, num_results=5)
             calls_made += 1
 
-            for r in results:
+            for r in results[:2]:
                 r_dict = r.model_dump(mode="json")
                 second_results.append(r_dict)
 
@@ -355,9 +356,11 @@ async def targeted_search(state: dict) -> dict:
                     if stance != EvidenceStance.IRRELEVANT:
                         source = Source(
                             url=r.url,
-                            domain=normalize_domain(r.source),
+                            hostname=r.hostname,
                             title=r.title,
                             source_type=_infer_source_type(engine),
+                            publication_date=r.publication_date,
+                            engagement_metadata=r.engagement_metadata,
                             retrieved_at=datetime.now(timezone.utc),
                             snippet=passage,
                         )
@@ -380,11 +383,17 @@ async def targeted_search(state: dict) -> dict:
     logger.info(f"Targeted search: {calls_made} calls, {len(second_evidence)} new evidence")
     _progress("targeted_search", f"Found {len(second_evidence)} new evidence from {calls_made} follow-up searches")
 
+    # Track which engines were actually used in follow-up
+    engines_used = set(state.get("engines_used", []))
+    for r in second_results:
+        engines_used.add(r.get("engine", "GOOGLE_SEARCH"))
+
     return {
         "current_step": "targeted_search",
         "second_search_results": second_results,
         "second_search_evidence": second_evidence,
         "search_calls_made": state.get("search_calls_made", 0) + calls_made,
+        "engines_used": list(engines_used),
     }
 
 
@@ -406,7 +415,7 @@ async def analyze_risks(state: dict) -> dict:
 
     evidence_summary = json.dumps(
         [{"passage": e["passage"][:200], "source_url": e["source"]["url"],
-          "domain": e["source"]["domain"], "stance": e["stance"], "engine": e["search_engine"]}
+          "hostname": e["source"]["hostname"], "stance": e["stance"], "engine": e["search_engine"]}
          for e in evidence[:20]],
         indent=2,
     )
@@ -470,7 +479,7 @@ async def generate_report(state: dict) -> dict:
         risk_indicators=[RiskIndicator.model_validate(r) for r in state.get("risk_indicators", [])],
         search_tasks_executed=[SearchTask.model_validate(t) for t in state.get("search_tasks", [])],
         engines_used=[SearchEngineType(e) for e in state.get("engines_used", [])],
-        total_sources_found=len(state.get("raw_search_results", [])),
+        total_sources_found=len(state.get("raw_search_results", [])) + len(state.get("second_search_results", [])),
         total_evidence_pieces=len(all_evidence),
         limitations=state.get("limitations", []),
         methodology_note=methodology,
@@ -498,8 +507,7 @@ def _infer_source_type(engine: SearchEngineType) -> SourceType:
 
 
 def _determine_claim_status(supporting: int, contradicting: int, neutral: int) -> ClaimStatus:
-    total = supporting + contradicting + neutral
-    if total == 0:
+    if supporting == 0 and contradicting == 0:
         return ClaimStatus.UNVERIFIED
     if contradicting > 0 and supporting > 0:
         return ClaimStatus.MIXED_EVIDENCE
@@ -515,7 +523,9 @@ def _generate_finding_summary(claim_text: str, status: ClaimStatus, ev_map: dict
     c = len(ev_map.get("contradicting", []))
     n = len(ev_map.get("neutral", []))
     if status == ClaimStatus.UNVERIFIED:
-        return f"No evidence was found to verify or refute this claim."
+        if n > 0:
+            return f"Found {n} neutral/irrelevant source(s), but no direct evidence to verify or refute this claim."
+        return "No evidence was found to verify or refute this claim."
     if status == ClaimStatus.SUPPORTED:
         return f"Found {s} supporting source(s) for this claim."
     if status == ClaimStatus.CONTRADICTED:

@@ -38,8 +38,10 @@ class SearchResult(BaseModel):
     title: str
     url: str
     snippet: str
-    source: str  # Domain or publisher name
-    date: Optional[str] = None
+    source: str  # Original publisher string
+    hostname: str = ""
+    publication_date: Optional[str] = None
+    engagement_metadata: Optional[str] = None
     engine: SearchEngineType
     position: int
     raw_data: dict[str, Any] = Field(
@@ -219,14 +221,27 @@ class SerpApiProvider:
         self, engine: SearchEngineType, data: dict
     ) -> list[SearchResult]:
         """Normalize Google organic / forum discussion results."""
+        from urllib.parse import urlparse
+        import json
+        
         results = []
         for idx, item in enumerate(data.get("organic_results", [])):
+            url = item.get("link", "")
+            hostname = urlparse(url).netloc if url else ""
+            
+            engagement = None
+            rich = item.get("rich_snippet", {})
+            if isinstance(rich, dict) and "top" in rich:
+                engagement = json.dumps(rich["top"])
+            
             results.append(SearchResult(
                 title=item.get("title", ""),
-                url=item.get("link", ""),
+                url=url,
                 snippet=item.get("snippet", ""),
                 source=item.get("displayed_link", item.get("source", "")),
-                date=item.get("date"),
+                hostname=hostname,
+                publication_date=item.get("date"),
+                engagement_metadata=engagement,
                 engine=engine,
                 position=idx + 1,
                 raw_data=item,
@@ -235,6 +250,8 @@ class SerpApiProvider:
 
     def _normalize_news(self, data: dict) -> list[SearchResult]:
         """Normalize Google News results."""
+        from urllib.parse import urlparse
+        
         results = []
         for idx, item in enumerate(data.get("news_results", [])):
             source_info = item.get("source", {})
@@ -243,12 +260,16 @@ class SerpApiProvider:
                 if isinstance(source_info, dict)
                 else str(source_info)
             )
+            url = item.get("link", "")
+            hostname = urlparse(url).netloc if url else ""
+            
             results.append(SearchResult(
                 title=item.get("title", ""),
-                url=item.get("link", ""),
+                url=url,
                 snippet=item.get("snippet", ""),
                 source=source_name,
-                date=item.get("date"),
+                hostname=hostname,
+                publication_date=item.get("date"),
                 engine=SearchEngineType.GOOGLE_NEWS,
                 position=idx + 1,
                 raw_data=item,
@@ -257,6 +278,8 @@ class SerpApiProvider:
 
     def _normalize_jobs(self, data: dict) -> list[SearchResult]:
         """Normalize Google Jobs results."""
+        from urllib.parse import urlparse
+        
         results = []
         for idx, item in enumerate(data.get("jobs_results", [])):
             # Google Jobs results have different structure
@@ -265,13 +288,15 @@ class SerpApiProvider:
 
             # Build URL from share_link or detected_extensions
             url = item.get("share_link", item.get("related_links", [{}])[0].get("link", "")) if item.get("related_links") else item.get("share_link", "")
-
+            hostname = urlparse(url).netloc if url else ""
+            
             results.append(SearchResult(
                 title=item.get("title", ""),
                 url=url or "",
                 snippet=snippet,
                 source=item.get("company_name", ""),
-                date=item.get("detected_extensions", {}).get("posted_at"),
+                hostname=hostname,
+                publication_date=item.get("detected_extensions", {}).get("posted_at"),
                 engine=SearchEngineType.GOOGLE_JOBS,
                 position=idx + 1,
                 raw_data=item,
@@ -280,6 +305,9 @@ class SerpApiProvider:
 
     def _normalize_maps(self, data: dict) -> list[SearchResult]:
         """Normalize Google Maps / local results."""
+        import json
+        from urllib.parse import urlparse
+        
         results = []
         for idx, item in enumerate(data.get("local_results", [])):
             # Maps results may have address, rating, etc.
@@ -296,12 +324,20 @@ class SerpApiProvider:
                 snippet_parts.append(f"Reviews: {reviews}")
             snippet = " | ".join(snippet_parts) if snippet_parts else item.get("description", "")
 
+            url = item.get("website", item.get("place_id_search", ""))
+            hostname = urlparse(url).netloc if url else ""
+            
+            engagement = None
+            if rating or reviews:
+                engagement = json.dumps({"rating": rating, "reviews": reviews})
+
             results.append(SearchResult(
                 title=item.get("title", ""),
-                url=item.get("website", item.get("place_id_search", "")),
+                url=url,
                 snippet=snippet,
                 source=item.get("type", "Google Maps"),
-                date=None,
+                hostname=hostname,
+                engagement_metadata=engagement,
                 engine=SearchEngineType.GOOGLE_MAPS,
                 position=idx + 1,
                 raw_data=item,

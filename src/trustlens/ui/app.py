@@ -242,7 +242,21 @@ def render_report(report: dict):
                 url = src.get("url", "")
                 if url:
                     st.markdown(f"🔗 **Source:** [{url}]({url})")
-                st.markdown(f"**Domain:** {src.get('domain', 'unknown')}")
+                
+                meta_parts = []
+                hostname = src.get("hostname", "")
+                if hostname:
+                    meta_parts.append(f"**Host:** {hostname}")
+                pub_date = src.get("publication_date")
+                if pub_date:
+                    meta_parts.append(f"**Date:** {pub_date}")
+                engagement = src.get("engagement_metadata")
+                if engagement:
+                    meta_parts.append(f"**Engagement:** {engagement}")
+                
+                if meta_parts:
+                    st.markdown(" | ".join(meta_parts))
+
                 st.markdown(f"**Stance:** {emoji} {stance} | **Relevance:** {ev.get('relevance_score', 0):.2f}")
                 st.markdown(f"**Passage:** {ev.get('passage', '')}")
 

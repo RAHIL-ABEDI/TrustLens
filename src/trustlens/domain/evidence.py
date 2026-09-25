@@ -28,9 +28,11 @@ class Source(DomainModel):
     """Information about the source where evidence was found."""
     source_id: UUID = Field(default_factory=uuid4)
     url: str
-    domain: str
+    hostname: str
     title: str
     source_type: SourceType
+    publication_date: Optional[str] = None
+    engagement_metadata: Optional[str] = None
     retrieved_at: datetime
     snippet: Optional[str] = None
 

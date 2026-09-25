@@ -26,11 +26,12 @@ logger = logging.getLogger(__name__)
 _DECOMPOSITION_PROMPT = """You are TrustLens, an investigation assistant that helps people assess online claims.
 
 Analyze the following claim and decompose it into atomic sub-claims that can each be independently verified.
+CRITICAL: Decompose combined statements thoroughly. For events, ensure that the organizer identity and the specific event name/version are separated into distinct checkable claims.
 
 For each atomic claim, identify:
 - The text of the specific sub-claim
 - The claim type (one of: JOB_OFFER, COMPANY_CLAIM, PRODUCT_CLAIM, ONLINE_OFFER, GENERAL)
-- Key entities mentioned (company names, product names, people, locations, amounts)
+- Key entities mentioned (company names, product names, people, locations, amounts, event versions)
 
 Also classify the overall claim type.
 
@@ -54,6 +55,10 @@ CLAIM TO ANALYZE:
 _STANCE_PROMPT = """You are TrustLens, an evidence analysis assistant.
 
 Given a claim and an evidence passage retrieved from the web, classify the relationship between them.
+CRITICAL RULES:
+- ONLY mark evidence as SUPPORTING or CONTRADICTING when the source passage *directly addresses* the specific claim.
+- A Maps listing for an office (e.g., Microsoft) does not, by itself, prove an event is being held there.
+- Always account for whether event posts or evidence refer to the *specific edition/version* of the event mentioned in the claim.
 
 Claim: {claim_text}
 
@@ -62,8 +67,8 @@ Evidence passage: {passage}
 Classify the stance as one of:
 - SUPPORTING: The evidence directly supports the claim
 - CONTRADICTING: The evidence contradicts or undermines the claim
-- NEUTRAL: The evidence is related but neither supports nor contradicts
-- IRRELEVANT: The evidence is not related to the claim
+- NEUTRAL: The evidence is related but neither supports nor contradicts directly
+- IRRELEVANT: The evidence is not related to the specific claim or edition
 
 Also provide a relevance score from 0.0 to 1.0.
 
@@ -348,8 +353,8 @@ class GeminiProvider:
         prompt: str,
         *,
         json_mode: bool = False,
-        max_retries: int = 3,
-        base_delay: float = 2.0,
+        max_retries: int = 5,
+        base_delay: float = 3.0,
     ) -> Any:
         """Core Gemini call with bounded exponential backoff for transient errors."""
         import asyncio

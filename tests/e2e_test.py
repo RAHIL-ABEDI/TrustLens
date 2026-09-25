@@ -22,16 +22,7 @@ def progress(step: str, detail: str):
     print(f"[{step}] {detail}")
 
 
-async def main():
-    print("=== CONTROLLED END-TO-END INVESTIGATION ===")
-    settings = TrustLensSettings()
-    
-    configure_providers(settings, progress_callback=progress)
-    workflow = create_investigation_workflow(settings)
-
-    # Use a safe, generic example claim
-    claim = "ABC Technologies is offering a remote AI internship for ₹50,000/month and guarantees placement."
-    
+async def investigate_claim(workflow, claim: str, settings: TrustLensSettings):
     initial_state = {
         "original_claim": claim,
         "claim_type": "",
@@ -56,7 +47,8 @@ async def main():
         "error": "",
     }
 
-    print(f"\nInvestigating: {claim}\n")
+    print(f"\n" + "="*50)
+    print(f"Investigating: {claim}\n")
     try:
         result = await workflow.ainvoke(initial_state)
         report = result.get("report")
@@ -70,6 +62,7 @@ async def main():
             print("\nFindings:")
             for f in report.get("claim_findings", []):
                 print(f"  - {f['claim_text']}: {f['status']}")
+                print(f"    Summary: {f['summary']}")
             
             print("\nRisk Indicators:")
             for r in report.get("risk_indicators", []):
@@ -80,13 +73,26 @@ async def main():
             print(f"State keys: {list(result.keys())}")
             
     except Exception as e:
-        # Redact API keys from errors
         err = str(e)
         if settings.gemini_api_key:
             err = err.replace(settings.gemini_api_key, "[REDACTED]")
         if settings.serpapi_api_key:
             err = err.replace(settings.serpapi_api_key, "[REDACTED]")
         print(f"\nCRASH: {err}")
+
+async def main():
+    print("=== CONTROLLED END-TO-END INVESTIGATIONS ===")
+    settings = TrustLensSettings()
+    configure_providers(settings, progress_callback=progress)
+    workflow = create_investigation_workflow(settings)
+
+    claims = [
+        "Microsoft is hosting the Global Tech Summit 2026 at their Bangalore office.",
+        "ABC Technologies is offering a remote AI internship for ₹50,000/month and guarantees placement."
+    ]
+    
+    for claim in claims:
+        await investigate_claim(workflow, claim, settings)
 
 if __name__ == "__main__":
     asyncio.run(main())
