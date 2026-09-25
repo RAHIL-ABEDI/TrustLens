@@ -16,7 +16,7 @@ class TrustLensSettings(BaseSettings):
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     
     # Gemini
-    gemini_model: str = "gemini-3.8-flash"
+    gemini_model: str = Field(default="gemini-3.5-flash-lite", validation_alias="GEMINI_MODEL")
     
     # Search config
     max_search_calls: int = 20

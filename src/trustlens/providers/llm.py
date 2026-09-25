@@ -348,20 +348,10 @@ class GeminiProvider:
         prompt: str,
         *,
         json_mode: bool = False,
-        max_retries: int = 5,
-        base_delay: float = 4.0,
+        max_retries: int = 3,
+        base_delay: float = 2.0,
     ) -> Any:
-        """Core Gemini call with retry logic for transient errors.
-
-        Args:
-            prompt: The prompt to send.
-            json_mode: Whether to request JSON output.
-            max_retries: Maximum number of attempts.
-            base_delay: Base delay in seconds (multiplied by attempt number).
-
-        Returns:
-            Parsed JSON dict (if json_mode) or text string.
-        """
+        """Core Gemini call with bounded exponential backoff for transient errors."""
         import asyncio
 
         last_error: Exception | None = None
@@ -396,13 +386,12 @@ class GeminiProvider:
                 last_error = exc
                 err_str = str(exc)
 
-                # Retry on 503 (overload) or 429 (rate limit)
-                if ("503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str) \
-                        and attempt < max_retries:
-                    delay = base_delay * attempt
+                # Retry on 503/429 with exponential backoff
+                if ("503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str) and attempt < max_retries:
+                    delay = base_delay * (2 ** (attempt - 1))
                     logger.warning(
                         f"Gemini transient error (attempt {attempt}/{max_retries}), "
-                        f"retrying in {delay:.0f}s: {err_str[:100]}"
+                        f"retrying in {delay:.1f}s: {err_str[:100]}"
                     )
                     await asyncio.sleep(delay)
                     continue

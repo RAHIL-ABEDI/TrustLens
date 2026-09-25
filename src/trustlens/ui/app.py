@@ -89,6 +89,27 @@ def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_cont
         loop.close()
 
 
+def _test_gemini_sync(settings: TrustLensSettings) -> None:
+    """Make one minimal structured-JSON Gemini API request. Raises Exception on failure."""
+    from trustlens.providers.llm import GeminiProvider
+    
+    async def do_test():
+        llm = GeminiProvider(
+            api_key=settings.gemini_api_key,
+            model_name=settings.gemini_model,
+        )
+        prompt = 'Respond with JSON: {"status": "ok"}'
+        # Using a direct call or _generate_json to test
+        return await llm._generate_json(prompt)
+    
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(do_test())
+    finally:
+        loop.close()
+
+
+
 # ── Sidebar ─────────────────────────────────────────────────────────
 
 def render_sidebar():
@@ -294,7 +315,25 @@ def main():
 
     if investigate and claim.strip():
         with st.status("🔍 Investigating claim...", expanded=True) as status_widget:
-            status_widget.write("📝 Starting investigation...")
+            status_widget.write("📝 Checking Gemini API...")
+            
+            try:
+                _test_gemini_sync(settings)
+                status_widget.write("✅ Gemini API check passed.")
+            except Exception as exc:
+                status_widget.update(label="❌ Investigation failed", state="error")
+                err_msg = str(exc)
+                if settings.serpapi_api_key:
+                    err_msg = err_msg.replace(settings.serpapi_api_key, "[REDACTED]")
+                if settings.gemini_api_key:
+                    err_msg = err_msg.replace(settings.gemini_api_key, "[REDACTED]")
+                
+                st.error(f"**Gemini API Error:** {err_msg}")
+                st.info(f"**Required Next Step:** The configured model `{settings.gemini_model}` might be unavailable or rate-limited for your API key. Check your Google AI Studio quota, or change the model in your `.env` file and restart.")
+                logger.exception("Gemini API check failed")
+                return
+
+            status_widget.write("📝 Starting investigation workflow...")
 
             try:
                 result = _run_investigation_sync(claim.strip(), settings, status_widget)
