@@ -1,11 +1,13 @@
 """
 TrustLens LangGraph Investigation Workflow.
 
-Orchestrates the full claim investigation pipeline:
-  understand_claim → decompose → plan → search → map_evidence
-  → detect_gaps → (targeted_search) → analyze_risks → generate_report
+Pipeline (9 nodes):
+  understand_claim → decompose_claim → plan_investigation
+  → execute_searches → map_evidence → detect_gaps
+  → (targeted_search if gaps) → analyze_risks → generate_report
 
-Each node is a pure function that takes state and returns state updates.
+Providers are accessed via the module-level registry in state.py,
+NOT passed through LangGraph state channels.
 """
 
 from __future__ import annotations
@@ -14,14 +16,16 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
 
 from langgraph.graph import END, StateGraph
 
-from trustlens.workflow.state import InvestigationState
-
+from trustlens.workflow.state import (
+    InvestigationState,
+    registry,
+    _progress,
+)
 from trustlens.config.settings import TrustLensSettings
-from trustlens.domain.claims import AtomicClaim, ClaimDecomposition, ClaimType
+from trustlens.domain.claims import ClaimDecomposition, ClaimType
 from trustlens.domain.evidence import Evidence, EvidenceStance, Source, SourceType
 from trustlens.domain.findings import (
     ClaimFinding,
@@ -31,11 +35,13 @@ from trustlens.domain.findings import (
 )
 from trustlens.domain.investigation import InvestigationPlan, SearchEngineType, SearchTask
 from trustlens.domain.report import InvestigationReport
-from trustlens.providers.llm import GeminiProvider
 from trustlens.providers.normalization import deduplicate_results, normalize_domain
-from trustlens.providers.serpapi import SerpApiProvider, SearchResult
+from trustlens.providers.serpapi import SearchResult
 
 logger = logging.getLogger(__name__)
+
+# Hard cap on SerpApi requests per investigation (primary + targeted combined)
+HARD_SEARCH_CAP = 5
 
 
 # ── Node Functions ──────────────────────────────────────────────────
@@ -44,26 +50,29 @@ logger = logging.getLogger(__name__)
 async def understand_claim(state: dict) -> dict:
     """Node 1: Parse and understand the user's claim."""
     logger.info("=== Node: understand_claim ===")
-    claim = state["original_claim"]
+    _progress("understand_claim", "Parsing your claim...")
     return {
         "current_step": "understand_claim",
-        "original_claim": claim.strip(),
+        "original_claim": state["original_claim"].strip(),
     }
 
 
 async def decompose_claim(state: dict) -> dict:
     """Node 2: Decompose the claim into atomic sub-claims using Gemini."""
     logger.info("=== Node: decompose_claim ===")
-    settings = state["_settings"]
-    llm = state["_llm"]
-    claim_text = state["original_claim"]
+    _progress("decompose_claim", "Breaking claim into verifiable sub-claims...")
+    llm = registry.llm
 
-    decomposition = await llm.analyze_claim(claim_text)
+    decomposition = await llm.analyze_claim(state["original_claim"])
     atomic_dicts = [ac.model_dump(mode="json") for ac in decomposition.atomic_claims]
 
     logger.info(
         f"Decomposed into {len(atomic_dicts)} atomic claims, "
         f"type={decomposition.claim_type.value}"
+    )
+    _progress(
+        "decompose_claim",
+        f"Found {len(atomic_dicts)} sub-claims (type: {decomposition.claim_type.value})",
     )
 
     return {
@@ -77,22 +86,22 @@ async def decompose_claim(state: dict) -> dict:
 async def plan_investigation(state: dict) -> dict:
     """Node 3: Create an investigation plan with engine-specific search tasks."""
     logger.info("=== Node: plan_investigation ===")
-    llm = state["_llm"]
+    _progress("plan_investigation", "Planning which engines to search...")
+    llm = registry.llm
 
-    # Reconstruct ClaimDecomposition from state
-    decomp_data = state["decomposition"]
-    decomposition = ClaimDecomposition.model_validate(decomp_data)
-
+    decomposition = ClaimDecomposition.model_validate(state["decomposition"])
     plan = await llm.generate_investigation_plan(decomposition)
 
-    # Cap search tasks to budget
-    settings = state["_settings"]
-    max_tasks = settings.max_search_calls
-    tasks = plan.search_tasks[:max_tasks]
-
+    # Hard-cap search tasks
+    cap = min(HARD_SEARCH_CAP, registry.settings.max_search_calls)
+    tasks = plan.search_tasks[:cap]
     engines = list(set(t.engine.value for t in tasks))
-    logger.info(
-        f"Investigation plan: {len(tasks)} search tasks across {len(engines)} engines"
+
+    logger.info(f"Plan: {len(tasks)} tasks across {len(engines)} engines (cap={cap})")
+    _progress(
+        "plan_investigation",
+        f"Will run {len(tasks)} searches across {len(engines)} engines: "
+        + ", ".join(engines),
     )
 
     return {
@@ -104,10 +113,9 @@ async def plan_investigation(state: dict) -> dict:
 
 
 async def execute_searches(state: dict) -> dict:
-    """Node 4: Execute all planned search tasks via SerpApi."""
+    """Node 4: Execute planned search tasks via SerpApi (hard-capped)."""
     logger.info("=== Node: execute_searches ===")
-    serpapi = state["_serpapi"]
-    settings = state["_settings"]
+    serpapi = registry.serpapi
     search_tasks = state["search_tasks"]
 
     all_results: list[dict] = []
@@ -115,29 +123,28 @@ async def execute_searches(state: dict) -> dict:
     engines_used = set()
 
     for task_dict in search_tasks:
-        if calls_made >= settings.max_search_calls:
-            logger.warning(f"Search budget exhausted ({calls_made} calls)")
+        if calls_made >= HARD_SEARCH_CAP:
+            logger.warning(f"Hard search cap ({HARD_SEARCH_CAP}) reached")
             break
 
         engine = SearchEngineType(task_dict["engine"])
         query = task_dict["query"]
+        _progress("execute_searches", f"[{calls_made+1}/{HARD_SEARCH_CAP}] Searching {engine.value}: {query[:60]}...")
 
         try:
             results = await serpapi.search(
                 engine=engine,
                 query=query,
-                num_results=settings.max_results_per_query,
+                num_results=registry.settings.max_results_per_query,
             )
             for r in results:
                 all_results.append(r.model_dump(mode="json"))
             calls_made += 1
             engines_used.add(engine.value)
-            logger.info(f"  [{engine.value}] '{query}' → {len(results)} results")
-
+            logger.info(f"  [{engine.value}] '{query}' -> {len(results)} results")
         except Exception as exc:
             logger.error(f"Search failed for '{query}' on {engine.value}: {exc}")
-            # Continue with remaining tasks — don't fail the whole investigation
-            calls_made += 1
+            calls_made += 1  # Count failed calls against cap
 
     # Deduplicate
     unique_results = deduplicate_results(
@@ -145,10 +152,8 @@ async def execute_searches(state: dict) -> dict:
     )
     unique_dicts = [r.model_dump(mode="json") for r in unique_results]
 
-    logger.info(
-        f"Search complete: {calls_made} calls, "
-        f"{len(all_results)} raw results → {len(unique_dicts)} unique"
-    )
+    logger.info(f"Searches done: {calls_made} calls, {len(unique_dicts)} unique results")
+    _progress("execute_searches", f"Collected {len(unique_dicts)} unique results from {calls_made} searches")
 
     return {
         "current_step": "execute_searches",
@@ -159,93 +164,97 @@ async def execute_searches(state: dict) -> dict:
 
 
 async def map_evidence(state: dict) -> dict:
-    """Node 5: Map search results to claims with stance classification."""
+    """Node 5: Map search results to claims with stance classification.
+
+    To limit Gemini calls, each result is classified against only
+    the single most relevant atomic claim (matched by search task).
+    """
     logger.info("=== Node: map_evidence ===")
-    llm = state["_llm"]
+    _progress("map_evidence", "Analyzing evidence stance for each result...")
+    llm = registry.llm
     atomic_claims = state["atomic_claims"]
     search_results = state["raw_search_results"]
+    search_tasks = state.get("search_tasks", [])
+
+    # Build claim_id -> search task mapping for targeted classification
+    task_claim_map: dict[str, str] = {}
+    for task in search_tasks:
+        task_claim_map[task.get("query", "")] = task.get("claim_id", "")
 
     evidence_list: list[dict] = []
-    claim_evidence_map: dict[str, dict[str, list[str]]] = {}
+    claim_evidence_map: dict[str, dict[str, list]] = {
+        ac["claim_id"]: {"supporting": [], "contradicting": [], "neutral": []}
+        for ac in atomic_claims
+    }
 
-    # Initialize evidence map per claim
-    for ac in atomic_claims:
-        cid = ac["claim_id"]
-        claim_evidence_map[cid] = {
-            "supporting": [],
-            "contradicting": [],
-            "neutral": [],
-        }
+    # Classify each result against the first atomic claim (limit Gemini calls)
+    # Use only results with meaningful snippets
+    results_to_classify = [
+        r for r in search_results
+        if r.get("snippet", "").strip() and len(r.get("snippet", "").strip()) >= 10
+    ]
 
-    # For each search result, classify against each atomic claim
-    for result in search_results:
-        passage = result.get("snippet", "")
-        if not passage or len(passage.strip()) < 10:
-            continue
+    # Cap at 15 classifications to limit Gemini calls
+    results_to_classify = results_to_classify[:15]
 
-        # Find the best matching claim (from the search task's claim_id if available)
-        for ac in atomic_claims:
-            try:
-                stance, relevance, reasoning = await llm.classify_evidence_stance(
-                    claim_text=ac["text"],
-                    passage=passage,
-                )
+    for idx, result in enumerate(results_to_classify):
+        passage = result["snippet"]
+        # Pick the first atomic claim for classification (simple approach for MVP)
+        ac = atomic_claims[idx % len(atomic_claims)]
+        _progress("map_evidence", f"Classifying evidence {idx+1}/{len(results_to_classify)}...")
 
-                if stance == EvidenceStance.IRRELEVANT and relevance < 0.3:
-                    continue
+        try:
+            stance, relevance, reasoning = await llm.classify_evidence_stance(
+                claim_text=ac["text"],
+                passage=passage,
+            )
 
-                # Create source
-                source = Source(
-                    url=result.get("url", ""),
-                    domain=normalize_domain(result.get("source", "")),
-                    title=result.get("title", ""),
-                    source_type=_infer_source_type(
-                        SearchEngineType(result.get("engine", "GOOGLE_SEARCH"))
-                    ),
-                    retrieved_at=datetime.now(timezone.utc),
-                    snippet=passage,
-                )
-
-                evidence = Evidence(
-                    claim_id=ac["claim_id"],
-                    source=source,
-                    passage=passage,
-                    stance=stance,
-                    relevance_score=relevance,
-                    search_engine=result.get("engine", ""),
-                    search_query=result.get("title", ""),
-                )
-
-                ev_dict = evidence.model_dump(mode="json")
-                evidence_list.append(ev_dict)
-
-                # Map to claim
-                cid = ac["claim_id"]
-                if stance == EvidenceStance.SUPPORTING:
-                    claim_evidence_map[cid]["supporting"].append(ev_dict["evidence_id"])
-                elif stance == EvidenceStance.CONTRADICTING:
-                    claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
-                elif stance == EvidenceStance.NEUTRAL:
-                    claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
-
-                break  # Map each result to first matching claim only
-
-            except Exception as exc:
-                logger.warning(f"Stance classification failed: {exc}")
+            if stance == EvidenceStance.IRRELEVANT and relevance < 0.3:
                 continue
+
+            source = Source(
+                url=result.get("url", ""),
+                domain=normalize_domain(result.get("source", "")),
+                title=result.get("title", ""),
+                source_type=_infer_source_type(
+                    SearchEngineType(result.get("engine", "GOOGLE_SEARCH"))
+                ),
+                retrieved_at=datetime.now(timezone.utc),
+                snippet=passage,
+            )
+
+            evidence = Evidence(
+                claim_id=ac["claim_id"],
+                source=source,
+                passage=passage,
+                stance=stance,
+                relevance_score=relevance,
+                search_engine=result.get("engine", ""),
+                search_query=result.get("title", ""),
+            )
+
+            ev_dict = evidence.model_dump(mode="json")
+            evidence_list.append(ev_dict)
+
+            cid = ac["claim_id"]
+            if stance == EvidenceStance.SUPPORTING:
+                claim_evidence_map[cid]["supporting"].append(ev_dict["evidence_id"])
+            elif stance == EvidenceStance.CONTRADICTING:
+                claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
+            elif stance == EvidenceStance.NEUTRAL:
+                claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
+
+        except Exception as exc:
+            logger.warning(f"Stance classification failed: {exc}")
 
     # Build claim findings
     claim_findings = []
     for ac in atomic_claims:
         cid = ac["claim_id"]
         ev_map = claim_evidence_map.get(cid, {"supporting": [], "contradicting": [], "neutral": []})
-
         status = _determine_claim_status(
-            len(ev_map["supporting"]),
-            len(ev_map["contradicting"]),
-            len(ev_map["neutral"]),
+            len(ev_map["supporting"]), len(ev_map["contradicting"]), len(ev_map["neutral"]),
         )
-
         finding = ClaimFinding(
             claim_id=cid,
             claim_text=ac["text"],
@@ -257,10 +266,8 @@ async def map_evidence(state: dict) -> dict:
         )
         claim_findings.append(finding.model_dump(mode="json"))
 
-    logger.info(
-        f"Evidence mapping complete: {len(evidence_list)} evidence pieces "
-        f"mapped to {len(claim_findings)} claims"
-    )
+    logger.info(f"Evidence mapping: {len(evidence_list)} pieces mapped to {len(claim_findings)} claims")
+    _progress("map_evidence", f"Mapped {len(evidence_list)} evidence pieces to {len(claim_findings)} claims")
 
     return {
         "current_step": "map_evidence",
@@ -272,8 +279,11 @@ async def map_evidence(state: dict) -> dict:
 async def detect_gaps(state: dict) -> dict:
     """Node 6: Identify claims with insufficient evidence."""
     logger.info("=== Node: detect_gaps ===")
-    settings = state["_settings"]
+    _progress("detect_gaps", "Checking for evidence gaps...")
+
     claim_findings = state["claim_findings"]
+    searches_already_made = state.get("search_calls_made", 0)
+    remaining_budget = HARD_SEARCH_CAP - searches_already_made
 
     gaps: list[dict] = []
     for finding in claim_findings:
@@ -282,7 +292,6 @@ async def detect_gaps(state: dict) -> dict:
             + len(finding.get("contradicting_evidence", []))
             + len(finding.get("neutral_evidence", []))
         )
-
         if total_evidence == 0:
             gap = EvidenceGap(
                 claim_id=finding["claim_id"],
@@ -293,12 +302,11 @@ async def detect_gaps(state: dict) -> dict:
             )
             gaps.append(gap.model_dump(mode="json"))
 
-    needs_second = len(gaps) > 0 and settings.enable_targeted_second_search
+    # Only do targeted search if we have budget remaining
+    needs_second = len(gaps) > 0 and remaining_budget > 0 and registry.settings.enable_targeted_second_search
 
-    logger.info(
-        f"Gap detection: {len(gaps)} gaps found, "
-        f"second search {'enabled' if needs_second else 'skipped'}"
-    )
+    logger.info(f"Gaps: {len(gaps)}, budget remaining: {remaining_budget}, second search: {needs_second}")
+    _progress("detect_gaps", f"Found {len(gaps)} gaps, {remaining_budget} searches remaining")
 
     return {
         "current_step": "detect_gaps",
@@ -308,25 +316,25 @@ async def detect_gaps(state: dict) -> dict:
 
 
 async def targeted_search(state: dict) -> dict:
-    """Node 7: Execute targeted follow-up searches for evidence gaps."""
+    """Node 7: Targeted follow-up searches for evidence gaps (budget-aware)."""
     logger.info("=== Node: targeted_search ===")
-    serpapi = state["_serpapi"]
-    llm = state["_llm"]
-    settings = state["_settings"]
+    _progress("targeted_search", "Running follow-up searches for gaps...")
+    serpapi = registry.serpapi
+    llm = registry.llm
     gaps = state["evidence_gaps"]
-    atomic_claims = state["atomic_claims"]
+    searches_already_made = state.get("search_calls_made", 0)
+    remaining_budget = HARD_SEARCH_CAP - searches_already_made
 
     second_results: list[dict] = []
     second_evidence: list[dict] = []
     calls_made = 0
 
     for gap in gaps:
-        if calls_made >= settings.max_second_search_calls:
+        if calls_made >= remaining_budget:
             break
 
         query = gap.get("suggested_query", gap.get("claim_text", ""))
-        engine_str = gap.get("suggested_engine", "GOOGLE_SEARCH")
-        engine = SearchEngineType(engine_str)
+        engine = SearchEngineType(gap.get("suggested_engine", "GOOGLE_SEARCH"))
 
         try:
             results = await serpapi.search(engine=engine, query=query, num_results=5)
@@ -340,13 +348,10 @@ async def targeted_search(state: dict) -> dict:
                 if not passage or len(passage.strip()) < 10:
                     continue
 
-                # Classify against the gap's claim
                 try:
                     stance, relevance, _ = await llm.classify_evidence_stance(
-                        claim_text=gap["claim_text"],
-                        passage=passage,
+                        claim_text=gap["claim_text"], passage=passage,
                     )
-
                     if stance != EvidenceStance.IRRELEVANT:
                         source = Source(
                             url=r.url,
@@ -368,84 +373,67 @@ async def targeted_search(state: dict) -> dict:
                         second_evidence.append(evidence.model_dump(mode="json"))
                 except Exception:
                     continue
-
         except Exception as exc:
             logger.warning(f"Targeted search failed: {exc}")
             calls_made += 1
 
-    logger.info(
-        f"Targeted search: {calls_made} calls, "
-        f"{len(second_evidence)} new evidence pieces"
-    )
+    logger.info(f"Targeted search: {calls_made} calls, {len(second_evidence)} new evidence")
+    _progress("targeted_search", f"Found {len(second_evidence)} new evidence from {calls_made} follow-up searches")
 
     return {
         "current_step": "targeted_search",
         "second_search_results": second_results,
         "second_search_evidence": second_evidence,
+        "search_calls_made": state.get("search_calls_made", 0) + calls_made,
     }
 
 
 async def analyze_risks(state: dict) -> dict:
     """Node 8: Identify risk indicators from all evidence."""
     logger.info("=== Node: analyze_risks ===")
-    llm = state["_llm"]
+    _progress("analyze_risks", "Analyzing risk patterns...")
+    llm = registry.llm
     claim_findings = state["claim_findings"]
     evidence = state["evidence_collection"] + state.get("second_search_evidence", [])
 
-    # Prepare summaries for LLM (limit size to avoid token overflow)
     findings_summary = json.dumps(
-        [
-            {
-                "claim": f["claim_text"],
-                "status": f["status"],
-                "supporting_count": len(f.get("supporting_evidence", [])),
-                "contradicting_count": len(f.get("contradicting_evidence", [])),
-            }
-            for f in claim_findings
-        ],
+        [{"claim": f["claim_text"], "status": f["status"],
+          "supporting": len(f.get("supporting_evidence", [])),
+          "contradicting": len(f.get("contradicting_evidence", []))}
+         for f in claim_findings],
         indent=2,
     )
 
     evidence_summary = json.dumps(
-        [
-            {
-                "passage": e["passage"][:200],
-                "source_url": e["source"]["url"],
-                "source_domain": e["source"]["domain"],
-                "stance": e["stance"],
-                "engine": e["search_engine"],
-            }
-            for e in evidence[:30]  # Cap at 30 evidence pieces for context window
-        ],
+        [{"passage": e["passage"][:200], "source_url": e["source"]["url"],
+          "domain": e["source"]["domain"], "stance": e["stance"], "engine": e["search_engine"]}
+         for e in evidence[:20]],
         indent=2,
     )
 
     try:
         result = await llm.analyze_risks(findings_summary, evidence_summary)
-        risk_indicators = []
-        for ri in result.get("risk_indicators", []):
-            indicator = RiskIndicator(
+        risk_indicators = [
+            RiskIndicator(
                 description=ri.get("description", ""),
                 severity=ri.get("severity", "LOW"),
                 explanation=ri.get("explanation", ""),
-            )
-            risk_indicators.append(indicator.model_dump(mode="json"))
-
+            ).model_dump(mode="json")
+            for ri in result.get("risk_indicators", [])
+        ]
         limitations = result.get("limitations", [
-            "Investigation is based on publicly available web data only.",
+            "Investigation based on publicly available web data only.",
             "Search results may not represent the complete picture.",
-            "Evidence freshness depends on search engine indexing.",
         ])
-
     except Exception as exc:
         logger.error(f"Risk analysis failed: {exc}")
         risk_indicators = []
         limitations = [
-            "Risk analysis could not be completed due to an error.",
-            "Investigation is based on publicly available web data only.",
+            "Risk analysis could not be completed.",
+            "Investigation based on publicly available web data only.",
         ]
 
-    logger.info(f"Risk analysis: {len(risk_indicators)} indicators found")
+    _progress("analyze_risks", f"Found {len(risk_indicators)} risk indicators")
 
     return {
         "current_step": "analyze_risks",
@@ -457,29 +445,21 @@ async def analyze_risks(state: dict) -> dict:
 async def generate_report(state: dict) -> dict:
     """Node 9: Assemble the final investigation report."""
     logger.info("=== Node: generate_report ===")
-    llm = state["_llm"]
+    _progress("generate_report", "Assembling final report...")
+    llm = registry.llm
 
-    # Merge primary + second-round evidence
     all_evidence = state["evidence_collection"] + state.get("second_search_evidence", [])
 
-    # Generate methodology note
     try:
-        findings_text = ", ".join(
-            f"{f['claim_text']}: {f['status']}"
-            for f in state["claim_findings"]
-        )
-        methodology = await llm.generate_report_summary(
-            state["original_claim"], findings_text
-        )
+        findings_text = ", ".join(f"{f['claim_text']}: {f['status']}" for f in state["claim_findings"])
+        methodology = await llm.generate_report_summary(state["original_claim"], findings_text)
     except Exception:
         methodology = (
             "This investigation was conducted using TrustLens, which searches "
             "multiple sources via SerpApi and presents evidence transparently. "
-            "Results should be used as one input in your decision-making, not "
-            "as a definitive determination."
+            "Results should be used as one input in your decision-making."
         )
 
-    # Build the report
     report = InvestigationReport(
         original_claim=state["original_claim"],
         claim_type=ClaimType(state["claim_type"]),
@@ -488,9 +468,7 @@ async def generate_report(state: dict) -> dict:
         evidence_collection=[Evidence.model_validate(e) for e in all_evidence],
         evidence_gaps=[EvidenceGap.model_validate(g) for g in state.get("evidence_gaps", [])],
         risk_indicators=[RiskIndicator.model_validate(r) for r in state.get("risk_indicators", [])],
-        search_tasks_executed=[
-            SearchTask.model_validate(t) for t in state.get("search_tasks", [])
-        ],
+        search_tasks_executed=[SearchTask.model_validate(t) for t in state.get("search_tasks", [])],
         engines_used=[SearchEngineType(e) for e in state.get("engines_used", [])],
         total_sources_found=len(state.get("raw_search_results", [])),
         total_evidence_pieces=len(all_evidence),
@@ -498,7 +476,7 @@ async def generate_report(state: dict) -> dict:
         methodology_note=methodology,
     )
 
-    logger.info("Investigation report generated successfully")
+    _progress("generate_report", "Report ready!")
 
     return {
         "current_step": "complete",
@@ -507,49 +485,37 @@ async def generate_report(state: dict) -> dict:
     }
 
 
-# ── Helper Functions ────────────────────────────────────────────────
-
+# ── Helpers ─────────────────────────────────────────────────────────
 
 def _infer_source_type(engine: SearchEngineType) -> SourceType:
-    """Infer source type from the search engine used."""
-    mapping = {
+    return {
         SearchEngineType.GOOGLE_SEARCH: SourceType.WEB_PAGE,
         SearchEngineType.GOOGLE_NEWS: SourceType.NEWS_ARTICLE,
         SearchEngineType.GOOGLE_JOBS: SourceType.JOB_LISTING,
         SearchEngineType.GOOGLE_MAPS: SourceType.BUSINESS_LISTING,
         SearchEngineType.GOOGLE_FORUMS: SourceType.FORUM_POST,
-    }
-    return mapping.get(engine, SourceType.UNKNOWN)
+    }.get(engine, SourceType.UNKNOWN)
 
 
-def _determine_claim_status(
-    supporting: int, contradicting: int, neutral: int
-) -> ClaimStatus:
-    """Determine claim status from evidence counts."""
+def _determine_claim_status(supporting: int, contradicting: int, neutral: int) -> ClaimStatus:
     total = supporting + contradicting + neutral
     if total == 0:
         return ClaimStatus.UNVERIFIED
     if contradicting > 0 and supporting > 0:
         return ClaimStatus.MIXED_EVIDENCE
-    if contradicting > 0 and supporting == 0:
+    if contradicting > 0:
         return ClaimStatus.CONTRADICTED
-    if supporting > 0 and contradicting == 0:
-        if neutral > supporting:
-            return ClaimStatus.PARTIALLY_VERIFIED
-        return ClaimStatus.SUPPORTED
+    if supporting > 0:
+        return ClaimStatus.SUPPORTED if neutral <= supporting else ClaimStatus.PARTIALLY_VERIFIED
     return ClaimStatus.PARTIALLY_VERIFIED
 
 
-def _generate_finding_summary(
-    claim_text: str, status: ClaimStatus, ev_map: dict
-) -> str:
-    """Generate a brief summary for a claim finding."""
+def _generate_finding_summary(claim_text: str, status: ClaimStatus, ev_map: dict) -> str:
     s = len(ev_map.get("supporting", []))
     c = len(ev_map.get("contradicting", []))
     n = len(ev_map.get("neutral", []))
-
     if status == ClaimStatus.UNVERIFIED:
-        return f"No evidence was found to verify or refute: '{claim_text}'"
+        return f"No evidence was found to verify or refute this claim."
     if status == ClaimStatus.SUPPORTED:
         return f"Found {s} supporting source(s) for this claim."
     if status == ClaimStatus.CONTRADICTED:
@@ -559,29 +525,16 @@ def _generate_finding_summary(
     return f"Partially verified: {s} supporting, {c} contradicting, {n} neutral source(s)."
 
 
+def should_do_targeted_search(state: dict) -> str:
+    return "targeted_search" if state.get("needs_second_search", False) else "analyze_risks"
+
+
 # ── Graph Construction ──────────────────────────────────────────────
 
-
-def should_do_targeted_search(state: dict) -> str:
-    """Conditional edge: decide if targeted search is needed."""
-    if state.get("needs_second_search", False):
-        return "targeted_search"
-    return "analyze_risks"
-
-
 def build_investigation_graph() -> StateGraph:
-    """Build and compile the TrustLens investigation LangGraph workflow.
-
-    Returns a compiled StateGraph ready for invocation.
-
-    Pipeline:
-        understand_claim → decompose_claim → plan_investigation
-        → execute_searches → map_evidence → detect_gaps
-        → (targeted_search if gaps) → analyze_risks → generate_report
-    """
+    """Build the 9-node TrustLens investigation pipeline."""
     graph = StateGraph(InvestigationState)
 
-    # Add nodes
     graph.add_node("understand_claim", understand_claim)
     graph.add_node("decompose_claim", decompose_claim)
     graph.add_node("plan_investigation", plan_investigation)
@@ -592,24 +545,17 @@ def build_investigation_graph() -> StateGraph:
     graph.add_node("analyze_risks", analyze_risks)
     graph.add_node("generate_report", generate_report)
 
-    # Linear edges
     graph.set_entry_point("understand_claim")
     graph.add_edge("understand_claim", "decompose_claim")
     graph.add_edge("decompose_claim", "plan_investigation")
     graph.add_edge("plan_investigation", "execute_searches")
     graph.add_edge("execute_searches", "map_evidence")
     graph.add_edge("map_evidence", "detect_gaps")
-
-    # Conditional edge: gap detection → targeted search or skip
     graph.add_conditional_edges(
         "detect_gaps",
         should_do_targeted_search,
-        {
-            "targeted_search": "targeted_search",
-            "analyze_risks": "analyze_risks",
-        },
+        {"targeted_search": "targeted_search", "analyze_risks": "analyze_risks"},
     )
-
     graph.add_edge("targeted_search", "analyze_risks")
     graph.add_edge("analyze_risks", "generate_report")
     graph.add_edge("generate_report", END)
@@ -617,16 +563,6 @@ def build_investigation_graph() -> StateGraph:
     return graph
 
 
-def create_investigation_workflow(
-    settings: TrustLensSettings,
-) -> Any:
-    """Create and compile the investigation workflow with injected dependencies.
-
-    Args:
-        settings: Application settings with API keys and config.
-
-    Returns:
-        Compiled LangGraph workflow ready for invocation.
-    """
-    graph = build_investigation_graph()
-    return graph.compile()
+def create_investigation_workflow(settings: TrustLensSettings) -> Any:
+    """Compile the workflow. Call configure_providers() before invoking."""
+    return build_investigation_graph().compile()

@@ -348,8 +348,8 @@ class GeminiProvider:
         prompt: str,
         *,
         json_mode: bool = False,
-        max_retries: int = 3,
-        base_delay: float = 3.0,
+        max_retries: int = 5,
+        base_delay: float = 4.0,
     ) -> Any:
         """Core Gemini call with retry logic for transient errors.
 
