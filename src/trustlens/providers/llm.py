@@ -331,39 +331,84 @@ class GeminiProvider:
     async def _generate_json(self, prompt: str) -> dict[str, Any]:
         """Generate structured JSON output from Gemini.
 
-        Uses Gemini's JSON response mode for reliable parsing.
+        Retries up to 3 times on 503 (overload) or 429 (rate limit) errors.
         """
-        try:
-            response = self._client.models.generate_content(
-                model=self._model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.2,  # Low temperature for consistent structured output
-                ),
-            )
-            if response.text:
-                return json.loads(response.text)
-            raise ValueError("Empty response from Gemini")
-        except json.JSONDecodeError as exc:
-            logger.error(f"Failed to parse Gemini JSON response: {exc}")
-            logger.debug(f"Raw response: {getattr(response, 'text', 'N/A')}")
-            raise
-        except Exception as exc:
-            logger.error(f"Gemini API error: {exc}")
-            raise
+        return await self._call_with_retry(prompt, json_mode=True)
 
     async def _generate_text(self, prompt: str) -> str:
-        """Generate plain text output from Gemini."""
-        try:
-            response = self._client.models.generate_content(
-                model=self._model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.4,
-                ),
-            )
-            return response.text or ""
-        except Exception as exc:
-            logger.error(f"Gemini API error: {exc}")
-            raise
+        """Generate plain text output from Gemini.
+
+        Retries up to 3 times on 503 (overload) or 429 (rate limit) errors.
+        """
+        result = await self._call_with_retry(prompt, json_mode=False)
+        return result if isinstance(result, str) else json.dumps(result)
+
+    async def _call_with_retry(
+        self,
+        prompt: str,
+        *,
+        json_mode: bool = False,
+        max_retries: int = 3,
+        base_delay: float = 3.0,
+    ) -> Any:
+        """Core Gemini call with retry logic for transient errors.
+
+        Args:
+            prompt: The prompt to send.
+            json_mode: Whether to request JSON output.
+            max_retries: Maximum number of attempts.
+            base_delay: Base delay in seconds (multiplied by attempt number).
+
+        Returns:
+            Parsed JSON dict (if json_mode) or text string.
+        """
+        import asyncio
+
+        last_error: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                config_kwargs: dict[str, Any] = {}
+                if json_mode:
+                    config_kwargs["response_mime_type"] = "application/json"
+                    config_kwargs["temperature"] = 0.2
+                else:
+                    config_kwargs["temperature"] = 0.4
+
+                response = self._client.models.generate_content(
+                    model=self._model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(**config_kwargs),
+                )
+
+                if not response.text:
+                    raise ValueError("Empty response from Gemini")
+
+                if json_mode:
+                    return json.loads(response.text)
+                return response.text
+
+            except json.JSONDecodeError as exc:
+                logger.error(f"Failed to parse Gemini JSON response: {exc}")
+                raise  # Don't retry parse errors
+
+            except Exception as exc:
+                last_error = exc
+                err_str = str(exc)
+
+                # Retry on 503 (overload) or 429 (rate limit)
+                if ("503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str) \
+                        and attempt < max_retries:
+                    delay = base_delay * attempt
+                    logger.warning(
+                        f"Gemini transient error (attempt {attempt}/{max_retries}), "
+                        f"retrying in {delay:.0f}s: {err_str[:100]}"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                logger.error(f"Gemini API error (attempt {attempt}): {exc}")
+                raise
+
+        raise last_error or RuntimeError("Gemini call failed after retries")
+
