@@ -123,7 +123,12 @@ async def decompose_claim(state: dict) -> dict:
     _progress("decompose_claim", "Breaking claim into verifiable sub-claims...")
     llm = registry.llm
 
-    decomposition = await llm.analyze_claim(state["original_claim"])
+    import re
+    clean_claim = re.sub(r'https?://[^\s]+', '', state["original_claim"]).strip()
+    if not clean_claim:
+        clean_claim = "Verify the main assertions made in the provided context."
+        
+    decomposition = await llm.analyze_claim(clean_claim)
     atomic_dicts = [ac.model_dump(mode="json") for ac in decomposition.atomic_claims]
 
     logger.info(

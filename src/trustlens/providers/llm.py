@@ -37,6 +37,14 @@ For each atomic claim, identify:
 - The claim type (one of: JOB_OFFER, COMPANY_CLAIM, PRODUCT_CLAIM, ONLINE_OFFER, GENERAL)
 - Key entities mentioned
 
+NEGATIVE EXAMPLES (What NOT to do):
+- User input: "The deadline is Oct 5 https://example.com/hackathon"
+  BAD extraction: ["The event is organized by example.com", "The deadline is Oct 5", "The official website is..."]
+  GOOD extraction: ["The deadline is Oct 5"]
+- User input: "Is XYZ offering 50k for an internship?"
+  BAD extraction: ["XYZ is a company", "XYZ is offering 50k"]
+  GOOD extraction: ["XYZ is offering 50k for an internship"]
+
 Also classify the overall claim type.
 
 Respond ONLY with valid JSON matching this exact structure:
@@ -137,6 +145,8 @@ Common valid risk patterns to look for:
 - Guarantees of placement or returns (common in scams)
 - Request for upfront payment or personal information
 - Recently registered domain
+
+If the claim is just factually wrong (e.g. wrong date, wrong organizer) but has no malicious scam markers, output an EMPTY list for risk_indicators.
 
 Claim findings:
 {findings_json}
