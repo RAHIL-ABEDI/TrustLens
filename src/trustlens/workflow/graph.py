@@ -183,7 +183,15 @@ async def execute_searches(state: dict) -> dict:
     serpapi = registry.serpapi
     search_tasks = state["search_tasks"]
 
-    all_results: list[dict] = list(state.get("raw_search_results", []))
+    # Preserve provided-URL results from understand_claim (do NOT deduplicate these)
+    provided_results = [
+        r for r in state.get("raw_search_results", [])
+        if r.get("raw_data", {}).get("is_provided_url") is True
+    ]
+    # Collect URLs from provided results to exclude from SerpApi dedup
+    provided_urls = {r.get("url", "") for r in provided_results}
+
+    serp_results: list[dict] = []
     calls_made = 0
     engines_used = set()
 
@@ -203,7 +211,7 @@ async def execute_searches(state: dict) -> dict:
                 num_results=registry.settings.max_results_per_query,
             )
             for r in results:
-                all_results.append(r.model_dump(mode="json"))
+                serp_results.append(r.model_dump(mode="json"))
             calls_made += 1
             engines_used.add(engine.value)
             logger.info(f"  [{engine.value}] '{query}' -> {len(results)} results")
@@ -211,18 +219,23 @@ async def execute_searches(state: dict) -> dict:
             logger.error(f"Search failed for '{query}' on {engine.value}: {exc}")
             calls_made += 1  # Count failed calls against cap
 
-    # Deduplicate
-    unique_results = deduplicate_results(
-        [SearchResult.model_validate(r) for r in all_results]
-    )
-    unique_dicts = [r.model_dump(mode="json") for r in unique_results]
+    # Deduplicate only the SerpApi results, excluding provided URLs
+    serp_for_dedup = [
+        SearchResult.model_validate(r) for r in serp_results
+        if r.get("url", "") not in provided_urls
+    ]
+    unique_serp = deduplicate_results(serp_for_dedup)
+    unique_serp_dicts = [r.model_dump(mode="json") for r in unique_serp]
 
-    logger.info(f"Searches done: {calls_made} calls, {len(unique_dicts)} unique results")
-    _progress("execute_searches", f"Collected {len(unique_dicts)} unique results from {calls_made} searches")
+    # Combine: provided-URL results first (they are the primary source), then SerpApi
+    combined = provided_results + unique_serp_dicts
+
+    logger.info(f"Searches done: {calls_made} calls, {len(combined)} total results ({len(provided_results)} provided, {len(unique_serp_dicts)} from search)")
+    _progress("execute_searches", f"Collected {len(combined)} results from {calls_made} searches + {len(provided_results)} provided URL(s)")
 
     return {
         "current_step": "execute_searches",
-        "raw_search_results": unique_dicts,
+        "raw_search_results": combined,
         "search_calls_made": calls_made,
         "engines_used": list(engines_used),
     }
@@ -231,20 +244,15 @@ async def execute_searches(state: dict) -> dict:
 async def map_evidence(state: dict) -> dict:
     """Node 5: Map search results to claims with stance classification.
 
-    To limit Gemini calls, each result is classified against only
-    the single most relevant atomic claim (matched by search task).
+    Provided-URL results (from understand_claim) are classified against
+    EVERY atomic claim because they are the primary evidence source.
+    Other search results are classified against one claim each.
     """
     logger.info("=== Node: map_evidence ===")
     _progress("map_evidence", "Analyzing evidence stance for each result...")
     llm = registry.llm
     atomic_claims = state["atomic_claims"]
     search_results = state["raw_search_results"]
-    search_tasks = state.get("search_tasks", [])
-
-    # Build claim_id -> search task mapping for targeted classification
-    task_claim_map: dict[str, str] = {}
-    for task in search_tasks:
-        task_claim_map[task.get("query", "")] = task.get("claim_id", "")
 
     evidence_list: list[dict] = []
     claim_evidence_map: dict[str, dict[str, list]] = {
@@ -252,27 +260,94 @@ async def map_evidence(state: dict) -> dict:
         for ac in atomic_claims
     }
 
-    # Classify each result against the first atomic claim (limit Gemini calls)
-    # Use only results with meaningful snippets
-    results_to_classify = [
+    # Separate provided-URL results from SerpApi results
+    provided_results = [
         r for r in search_results
-        if r.get("snippet", "").strip() and len(r.get("snippet", "").strip()) >= 10
+        if r.get("raw_data", {}).get("is_provided_url") is True
+        and r.get("snippet", "").strip()
+        and len(r.get("snippet", "").strip()) >= 10
+    ]
+    serp_results = [
+        r for r in search_results
+        if not r.get("raw_data", {}).get("is_provided_url")
+        and r.get("snippet", "").strip()
+        and len(r.get("snippet", "").strip()) >= 10
     ]
 
-    # Cap at 7 classifications to limit Gemini calls (free tier is 15 RPM)
-    results_to_classify = results_to_classify[:7]
+    gemini_call_count = 0
+    MAX_GEMINI_CALLS = 12  # budget for free-tier 15 RPM
 
-    for idx, result in enumerate(results_to_classify):
+    # Phase 1: Classify each provided-URL result against EVERY atomic claim
+    for result in provided_results:
         passage = result["snippet"]
-        # Pick the first atomic claim for classification (simple approach for MVP)
+        for ac in atomic_claims:
+            if gemini_call_count >= MAX_GEMINI_CALLS:
+                break
+            _progress("map_evidence", f"Checking provided URL against: {ac['text'][:50]}...")
+            try:
+                stance, relevance, reasoning, correction = await llm.classify_evidence_stance(
+                    claim_text=ac["text"],
+                    passage=passage,
+                )
+                gemini_call_count += 1
+
+                if stance == EvidenceStance.IRRELEVANT and relevance < 0.3:
+                    continue
+
+                source = Source(
+                    url=result.get("url", ""),
+                    hostname=result.get("hostname", ""),
+                    title=result.get("title", ""),
+                    source_type=SourceType.OFFICIAL_SITE,
+                    publication_date=result.get("publication_date"),
+                    engagement_metadata=result.get("engagement_metadata"),
+                    retrieved_at=datetime.now(timezone.utc),
+                    snippet=passage[:500],
+                )
+
+                evidence = Evidence(
+                    claim_id=ac["claim_id"],
+                    source=source,
+                    passage=passage[:500],
+                    stance=stance,
+                    relevance_score=relevance,
+                    search_engine="PROVIDED_URL",
+                    search_query=result.get("url", ""),
+                )
+
+                ev_dict = evidence.model_dump(mode="json")
+                evidence_list.append(ev_dict)
+
+                cid = ac["claim_id"]
+                if stance == EvidenceStance.SUPPORTING:
+                    claim_evidence_map[cid]["supporting"].append(ev_dict["evidence_id"])
+                elif stance == EvidenceStance.CONTRADICTING:
+                    claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
+                elif stance == EvidenceStance.NEUTRAL:
+                    claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
+
+                if correction and "correction" not in claim_evidence_map[cid]:
+                    claim_evidence_map[cid]["correction"] = str(correction)
+
+            except Exception as exc:
+                logger.warning(f"Stance classification for provided URL failed: {exc}")
+                gemini_call_count += 1
+
+    # Phase 2: Classify SerpApi results (one claim each, round-robin)
+    serp_to_classify = serp_results[:max(0, MAX_GEMINI_CALLS - gemini_call_count)]
+    for idx, result in enumerate(serp_to_classify):
+        if gemini_call_count >= MAX_GEMINI_CALLS:
+            break
+        passage = result["snippet"]
         ac = atomic_claims[idx % len(atomic_claims)]
-        _progress("map_evidence", f"Classifying evidence {idx+1}/{len(results_to_classify)}...")
+        _progress("map_evidence", f"Classifying search result {idx+1}/{len(serp_to_classify)}...")
 
         try:
             stance, relevance, reasoning, correction = await llm.classify_evidence_stance(
                 claim_text=ac["text"],
                 passage=passage,
             )
+            gemini_call_count += 1
 
             if stance == EvidenceStance.IRRELEVANT and relevance < 0.3:
                 continue
@@ -310,12 +385,13 @@ async def map_evidence(state: dict) -> dict:
                 claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
             elif stance == EvidenceStance.NEUTRAL:
                 claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
-            
+
             if correction and "correction" not in claim_evidence_map[cid]:
                 claim_evidence_map[cid]["correction"] = str(correction)
 
         except Exception as exc:
             logger.warning(f"Stance classification failed: {exc}")
+            gemini_call_count += 1
 
     # Build claim findings
     claim_findings = []
@@ -419,7 +495,7 @@ async def targeted_search(state: dict) -> dict:
                     continue
 
                 try:
-                    stance, relevance, _ = await llm.classify_evidence_stance(
+                    stance, relevance, _, correction = await llm.classify_evidence_stance(
                         claim_text=gap["claim_text"], passage=passage,
                     )
                     if stance != EvidenceStance.IRRELEVANT:
