@@ -41,3 +41,4 @@ class ClaimFinding(DomainModel):
     contradicting_evidence: list[UUID] = Field(default_factory=list)
     neutral_evidence: list[UUID] = Field(default_factory=list)
     summary: str
+    correction: str | None = None

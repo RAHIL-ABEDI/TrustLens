@@ -47,13 +47,73 @@ HARD_SEARCH_CAP = 5
 # ── Node Functions ──────────────────────────────────────────────────
 
 
+import re
+import httpx
+from urllib.parse import urlparse
+from html.parser import HTMLParser
+
+class _TextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.text = []
+        self.ignore = False
+    def handle_starttag(self, tag, attrs):
+        if tag in ["script", "style", "noscript", "nav", "footer", "head"]:
+            self.ignore = True
+    def handle_endtag(self, tag):
+        if tag in ["script", "style", "noscript", "nav", "footer", "head"]:
+            self.ignore = False
+    def handle_data(self, data):
+        if not self.ignore:
+            t = data.strip()
+            if t:
+                self.text.append(t)
+
+async def _fetch_url_text(url: str) -> str:
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            parser = _TextExtractor()
+            parser.feed(resp.text)
+            return " ".join(parser.text)
+    except Exception as e:
+        logger.warning(f"Failed to fetch {url}: {e}")
+        return ""
+
 async def understand_claim(state: dict) -> dict:
     """Node 1: Parse and understand the user's claim."""
     logger.info("=== Node: understand_claim ===")
     _progress("understand_claim", "Parsing your claim...")
+    
+    claim_text = state["original_claim"].strip()
+    urls = re.findall(r'(https?://[^\s]+)', claim_text)
+    
+    raw_results = []
+    for url in urls:
+        # Strip trailing punctuation
+        url = url.rstrip('.,)"\'')
+        _progress("understand_claim", f"Fetching provided URL: {url[:50]}...")
+        text = await _fetch_url_text(url)
+        if text:
+            domain = urlparse(url).netloc
+            raw_results.append({
+                "title": f"Provided Context: {domain}",
+                "url": url,
+                "snippet": text[:2000],  # Take first 2k chars for LLM context
+                "source": domain,
+                "hostname": domain,
+                "publication_date": None,
+                "engagement_metadata": None,
+                "engine": "GOOGLE_SEARCH",
+                "position": 0,
+                "raw_data": {"is_provided_url": True},
+            })
+            
     return {
         "current_step": "understand_claim",
-        "original_claim": state["original_claim"].strip(),
+        "original_claim": claim_text,
+        "raw_search_results": raw_results,
     }
 
 
@@ -118,7 +178,7 @@ async def execute_searches(state: dict) -> dict:
     serpapi = registry.serpapi
     search_tasks = state["search_tasks"]
 
-    all_results: list[dict] = []
+    all_results: list[dict] = list(state.get("raw_search_results", []))
     calls_made = 0
     engines_used = set()
 
@@ -204,7 +264,7 @@ async def map_evidence(state: dict) -> dict:
         _progress("map_evidence", f"Classifying evidence {idx+1}/{len(results_to_classify)}...")
 
         try:
-            stance, relevance, reasoning = await llm.classify_evidence_stance(
+            stance, relevance, reasoning, correction = await llm.classify_evidence_stance(
                 claim_text=ac["text"],
                 passage=passage,
             )
@@ -245,6 +305,9 @@ async def map_evidence(state: dict) -> dict:
                 claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
             elif stance == EvidenceStance.NEUTRAL:
                 claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
+            
+            if correction and "correction" not in claim_evidence_map[cid]:
+                claim_evidence_map[cid]["correction"] = str(correction)
 
         except Exception as exc:
             logger.warning(f"Stance classification failed: {exc}")
@@ -265,6 +328,7 @@ async def map_evidence(state: dict) -> dict:
             contradicting_evidence=ev_map["contradicting"],
             neutral_evidence=ev_map["neutral"],
             summary=_generate_finding_summary(ac["text"], status, ev_map),
+            correction=ev_map.get("correction")
         )
         claim_findings.append(finding.model_dump(mode="json"))
 
@@ -469,8 +533,21 @@ async def generate_report(state: dict) -> dict:
             "Results should be used as one input in your decision-making."
         )
 
+    statuses = [f["status"] for f in state["claim_findings"]]
+    if not statuses:
+        overall_status = "UNKNOWN"
+    elif all(s == "SUPPORTED" for s in statuses):
+        overall_status = "ACCURATE"
+    elif all(s == "CONTRADICTED" for s in statuses):
+        overall_status = "INACCURATE"
+    elif all(s == "UNVERIFIED" for s in statuses):
+        overall_status = "UNVERIFIED"
+    else:
+        overall_status = "PARTLY ACCURATE"
+
     report = InvestigationReport(
         original_claim=state["original_claim"],
+        overall_status=overall_status,
         claim_type=ClaimType(state["claim_type"]),
         investigated_at=datetime.now(timezone.utc),
         claim_findings=[ClaimFinding.model_validate(f) for f in state["claim_findings"]],

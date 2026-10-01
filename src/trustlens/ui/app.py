@@ -165,8 +165,9 @@ def render_report(report: dict):
     st.info(report.get("original_claim", ""))
 
     claim_type = report.get("claim_type", "GENERAL")
+    overall = report.get("overall_status", "UNKNOWN")
     timestamp = str(report.get("investigated_at", ""))[:19]
-    st.caption(f"**Type:** {claim_type} | **Time:** {timestamp}")
+    st.caption(f"**Overall Status:** {overall} | **Type:** {claim_type} | **Time:** {timestamp}")
 
     # ── Stats
     col1, col2, col3, col4 = st.columns(4)
@@ -201,6 +202,9 @@ def render_report(report: dict):
         with st.expander(f"{emoji} {finding.get('claim_text', '')[:100]}", expanded=True):
             st.markdown(f"**Status:** {emoji} {status}")
             st.markdown(f"**Summary:** {finding.get('summary', '')}")
+            if finding.get("correction"):
+                st.success(f"**Correction:** {finding.get('correction')}")
+            
             c1, c2, c3 = st.columns(3)
             c1.markdown(f"✅ Supporting: **{len(finding.get('supporting_evidence', []))}**")
             c2.markdown(f"❌ Contradicting: **{len(finding.get('contradicting_evidence', []))}**")

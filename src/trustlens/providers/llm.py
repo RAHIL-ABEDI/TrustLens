@@ -26,12 +26,16 @@ logger = logging.getLogger(__name__)
 _DECOMPOSITION_PROMPT = """You are TrustLens, an investigation assistant that helps people assess online claims.
 
 Analyze the following claim and decompose it into atomic sub-claims that can each be independently verified.
-CRITICAL: Decompose combined statements thoroughly. For events, ensure that the organizer identity and the specific event name/version are separated into distinct checkable claims.
+CRITICAL RULES:
+- Decompose ONLY the factual assertions the user made.
+- Treat any provided URL as source context, NOT a new claim.
+- Do NOT invent organizer, event-name, or hosting claims unless the user explicitly asks about them in the text.
+- Separate combined statements thoroughly into distinct checkable claims.
 
 For each atomic claim, identify:
 - The text of the specific sub-claim
 - The claim type (one of: JOB_OFFER, COMPANY_CLAIM, PRODUCT_CLAIM, ONLINE_OFFER, GENERAL)
-- Key entities mentioned (company names, product names, people, locations, amounts, event versions)
+- Key entities mentioned
 
 Also classify the overall claim type.
 
@@ -56,9 +60,10 @@ _STANCE_PROMPT = """You are TrustLens, an evidence analysis assistant.
 
 Given a claim and an evidence passage retrieved from the web, classify the relationship between them.
 CRITICAL RULES:
+- Compare each assertion independently against direct evidence.
 - ONLY mark evidence as SUPPORTING or CONTRADICTING when the source passage *directly addresses* the specific claim.
-- A Maps listing for an office (e.g., Microsoft) does not, by itself, prove an event is being held there.
-- Always account for whether event posts or evidence refer to the *specific edition/version* of the event mentioned in the claim.
+- When a source gives a clear alternative (e.g., a different date), mark the original claim CONTRADICTED and provide the correction.
+- Do not call it merely UNVERIFIED if there is a clear contradiction.
 
 Claim: {claim_text}
 
@@ -70,12 +75,13 @@ Classify the stance as one of:
 - NEUTRAL: The evidence is related but neither supports nor contradicts directly
 - IRRELEVANT: The evidence is not related to the specific claim or edition
 
-Also provide a relevance score from 0.0 to 1.0.
+Also provide a relevance score from 0.0 to 1.0, and a correction if the claim is contradicted or partially verified.
 
 Respond ONLY with valid JSON:
 {{
     "stance": "SUPPORTING | CONTRADICTING | NEUTRAL | IRRELEVANT",
     "relevance_score": 0.0 to 1.0,
+    "correction": "The factual correction if any, else null",
     "reasoning": "brief explanation"
 }}
 """
@@ -123,18 +129,14 @@ _RISK_PROMPT = """You are TrustLens, a risk analysis assistant.
 
 Based on the evidence gathered during an investigation, identify risk indicators.
 Do NOT assign a trust score or claim the result is a scam.
-Instead, flag specific concerning patterns with evidence references.
+CRITICAL: Don’t convert an incorrect date, minor factual error, or typo into a scam-risk indicator. TrustLens can avoid scam/legitimacy verdicts while still verifying facts.
 
-Common risk patterns to look for:
+Common valid risk patterns to look for:
 - Company has no verifiable physical address or online presence
 - Job offers with unrealistic salary for the role/location
 - Guarantees of placement or returns (common in scams)
-- No verifiable news coverage or press releases
-- Negative user reports in forums
-- Mismatch between claimed company size and actual online footprint
 - Request for upfront payment or personal information
 - Recently registered domain
-- No matching job listings on established job platforms
 
 Claim findings:
 {findings_json}
@@ -210,7 +212,7 @@ class GeminiProvider:
 
     async def classify_evidence_stance(
         self, claim_text: str, passage: str
-    ) -> tuple[EvidenceStance, float, str]:
+    ) -> tuple[EvidenceStance, float, str, str | None]:
         """Classify the stance of an evidence passage relative to a claim.
 
         Args:
@@ -218,7 +220,7 @@ class GeminiProvider:
             passage: The evidence passage to classify.
 
         Returns:
-            Tuple of (stance, relevance_score, reasoning).
+            Tuple of (stance, relevance_score, reasoning, correction).
         """
         logger.debug("Classifying evidence stance")
         prompt = _STANCE_PROMPT.format(claim_text=claim_text, passage=passage)
@@ -227,7 +229,8 @@ class GeminiProvider:
         stance = EvidenceStance(raw["stance"])
         relevance = max(0.0, min(1.0, float(raw.get("relevance_score", 0.5))))
         reasoning = raw.get("reasoning", "")
-        return stance, relevance, reasoning
+        correction = raw.get("correction")
+        return stance, relevance, reasoning, correction
 
     async def generate_investigation_plan(
         self,

@@ -11,6 +11,7 @@ class InvestigationReport(DomainModel):
     """The final report summarizing the investigation of a claim."""
     report_id: UUID = Field(default_factory=uuid4)
     original_claim: str
+    overall_status: str | None = None
     claim_type: ClaimType
     investigated_at: datetime
     claim_findings: list[ClaimFinding] = Field(default_factory=list)
