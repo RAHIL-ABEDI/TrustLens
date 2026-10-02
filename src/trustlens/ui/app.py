@@ -185,6 +185,7 @@ def render_report(report: dict):
             "GOOGLE_NEWS": "📰 Google News",
             "GOOGLE_MAPS": "📍 Google Maps",
             "GOOGLE_FORUMS": "💬 Google Forums",
+            "GOOGLE_ADS": "📢 Google Ads",
         }
         st.markdown("**SerpApi Engines Used:** " + " · ".join(
             engine_labels.get(e, e) for e in engines

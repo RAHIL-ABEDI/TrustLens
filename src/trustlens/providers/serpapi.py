@@ -26,7 +26,8 @@ _ENGINE_PARAMS: dict[SearchEngineType, str] = {
     SearchEngineType.GOOGLE_JOBS: "google_jobs",
     SearchEngineType.GOOGLE_NEWS: "google_news",
     SearchEngineType.GOOGLE_MAPS: "google_maps",
-    SearchEngineType.GOOGLE_FORUMS: "google",  # Forums use Google with tbm=dsc
+    SearchEngineType.GOOGLE_FORUMS: "google",  # Forums use Google with udm=18
+    SearchEngineType.GOOGLE_ADS: "google_ads_transparency_center",
 }
 
 
@@ -150,8 +151,15 @@ class SerpApiProvider:
                 params["ll"] = location  # lat,lng format
 
         elif engine == SearchEngineType.GOOGLE_FORUMS:
-            params["tbm"] = "dsc"  # Discussions tab
+            params["udm"] = "18"  # Discussions and forums tab
             params["num"] = num_results
+
+        elif engine == SearchEngineType.GOOGLE_ADS:
+            params.pop("q", None)
+            if query.startswith("AR"): # naive check for advertiser ID
+                params["advertiser_id"] = query
+            else:
+                params["text"] = query
 
         return params
 
@@ -215,6 +223,8 @@ class SerpApiProvider:
             return self._normalize_jobs(data)
         elif engine == SearchEngineType.GOOGLE_MAPS:
             return self._normalize_maps(data)
+        elif engine == SearchEngineType.GOOGLE_ADS:
+            return self._normalize_ads(data)
         return []
 
     def _normalize_organic(
@@ -342,4 +352,53 @@ class SerpApiProvider:
                 position=idx + 1,
                 raw_data=item,
             ))
+        return results
+
+    def _normalize_ads(self, data: dict) -> list[SearchResult]:
+        """Normalize Google Ads Transparency Center results."""
+        results = []
+        
+        # If searching by text, it might return a list of advertisers
+        for idx, item in enumerate(data.get("advertisers", [])):
+            name = item.get("name", "")
+            adv_id = item.get("advertiser_id", "")
+            location = item.get("location", "")
+            snippet = f"Advertiser: {name} | ID: {adv_id} | Location: {location}"
+            results.append(SearchResult(
+                title=f"Advertiser: {name}",
+                url=item.get("link", ""),
+                snippet=snippet,
+                source="Google Ads Transparency Center",
+                hostname="adstransparency.google.com",
+                engine=SearchEngineType.GOOGLE_ADS,
+                position=idx + 1,
+                raw_data=item,
+            ))
+            
+        # If searching by advertiser_id, it returns ads
+        for idx, item in enumerate(data.get("ads", [])):
+            adv = item.get("advertiser", {})
+            name = adv.get("name", "")
+            snippet_text = item.get("text", "")
+            
+            if not snippet_text:
+                if item.get("videos"):
+                    snippet_text = "[Video Ad]"
+                elif item.get("images"):
+                    snippet_text = "[Image Ad]"
+                else:
+                    snippet_text = "[Ad]"
+            
+            snippet = f"Ad by {name}: {snippet_text}"
+            results.append(SearchResult(
+                title=f"Ad from {name}",
+                url=item.get("ad_url", ""),
+                snippet=snippet,
+                source="Google Ads Transparency Center",
+                hostname="adstransparency.google.com",
+                engine=SearchEngineType.GOOGLE_ADS,
+                position=len(results) + idx + 1,
+                raw_data=item,
+            ))
+            
         return results

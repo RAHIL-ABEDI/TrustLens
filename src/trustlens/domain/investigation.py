@@ -10,6 +10,7 @@ class SearchEngineType(str, Enum):
     GOOGLE_NEWS = "GOOGLE_NEWS"
     GOOGLE_MAPS = "GOOGLE_MAPS"
     GOOGLE_FORUMS = "GOOGLE_FORUMS"
+    GOOGLE_ADS = "GOOGLE_ADS"
 
 
 class SearchTask(DomainModel):

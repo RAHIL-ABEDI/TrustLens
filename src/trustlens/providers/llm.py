@@ -101,15 +101,17 @@ Available engines:
 - GOOGLE_NEWS: Check recent news coverage, press releases, scam reports
 - GOOGLE_MAPS: Verify business locations, check if company has physical presence
 - GOOGLE_FORUMS: Find community discussions, user experiences, complaints
+- GOOGLE_ADS: Check Google Ads Transparency Center for advertiser identity verification, running ad campaigns, and official names.
 
 IMPORTANT RULES:
 - Do NOT call every engine for every claim. Select only relevant ones.
 - Job/internship claims → use GOOGLE_JOBS + GOOGLE_SEARCH + GOOGLE_NEWS
-- Company existence claims → use GOOGLE_MAPS + GOOGLE_SEARCH
+- Company existence claims → use GOOGLE_MAPS + GOOGLE_SEARCH + GOOGLE_ADS
 - Salary/payment claims → use GOOGLE_SEARCH + GOOGLE_FORUMS
 - Product claims → use GOOGLE_SEARCH + GOOGLE_NEWS + GOOGLE_FORUMS
+- Advertising claims/legitimacy → use GOOGLE_ADS + GOOGLE_SEARCH
 - Generate 2-4 search queries per atomic claim, each targeted at a specific engine
-- Write queries as a real user would search (natural language)
+- Write queries as a real user would search (natural language), EXCEPT for GOOGLE_ADS where you should just use the company name or domain.
 
 Decomposed claims:
 {decomposition_json}

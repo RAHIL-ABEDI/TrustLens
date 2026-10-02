@@ -100,7 +100,7 @@ async def understand_claim(state: dict) -> dict:
             raw_results.append({
                 "title": f"Provided Context: {domain}",
                 "url": url,
-                "snippet": text[:4000],  # Take first 4k chars to capture main content
+                "snippet": text[:15000],  # Take first 15k chars to capture main content
                 "source": domain,
                 "hostname": domain,
                 "publication_date": None,
@@ -675,6 +675,7 @@ def _infer_source_type(engine: SearchEngineType) -> SourceType:
         SearchEngineType.GOOGLE_JOBS: SourceType.JOB_LISTING,
         SearchEngineType.GOOGLE_MAPS: SourceType.BUSINESS_LISTING,
         SearchEngineType.GOOGLE_FORUMS: SourceType.FORUM_POST,
+        SearchEngineType.GOOGLE_ADS: SourceType.OFFICIAL_SITE,
     }.get(engine, SourceType.UNKNOWN)
 
 
