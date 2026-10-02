@@ -100,7 +100,7 @@ async def understand_claim(state: dict) -> dict:
             raw_results.append({
                 "title": f"Provided Context: {domain}",
                 "url": url,
-                "snippet": text[:2000],  # Take first 2k chars for LLM context
+                "snippet": text[:4000],  # Take first 4k chars to capture main content
                 "source": domain,
                 "hostname": domain,
                 "publication_date": None,
@@ -285,7 +285,7 @@ async def map_evidence(state: dict) -> dict:
                 break
             _progress("map_evidence", f"Checking provided URL against: {ac['text'][:50]}...")
             try:
-                stance, relevance, reasoning, correction = await llm.classify_evidence_stance(
+                stance, relevance, reasoning, correction, excerpt = await llm.classify_evidence_stance(
                     claim_text=ac["text"],
                     passage=passage,
                 )
@@ -323,11 +323,16 @@ async def map_evidence(state: dict) -> dict:
                     claim_evidence_map[cid]["supporting"].append(ev_dict["evidence_id"])
                 elif stance == EvidenceStance.CONTRADICTING:
                     claim_evidence_map[cid]["contradicting"].append(ev_dict["evidence_id"])
+                    claim_evidence_map[cid]["official_contradicted"] = True
                 elif stance == EvidenceStance.NEUTRAL:
                     claim_evidence_map[cid]["neutral"].append(ev_dict["evidence_id"])
 
                 if correction and "correction" not in claim_evidence_map[cid]:
                     claim_evidence_map[cid]["correction"] = str(correction)
+                if excerpt and "excerpt" not in claim_evidence_map[cid]:
+                    claim_evidence_map[cid]["excerpt"] = str(excerpt)
+                    claim_evidence_map[cid]["source_url"] = result.get("url", "")
+                    claim_evidence_map[cid]["source_title"] = result.get("title", "")
 
             except Exception as exc:
                 logger.warning(f"Stance classification for provided URL failed: {exc}")
@@ -343,7 +348,7 @@ async def map_evidence(state: dict) -> dict:
         _progress("map_evidence", f"Classifying search result {idx+1}/{len(serp_to_classify)}...")
 
         try:
-            stance, relevance, reasoning, correction = await llm.classify_evidence_stance(
+            stance, relevance, reasoning, correction, excerpt = await llm.classify_evidence_stance(
                 claim_text=ac["text"],
                 passage=passage,
             )
@@ -388,6 +393,10 @@ async def map_evidence(state: dict) -> dict:
 
             if correction and "correction" not in claim_evidence_map[cid]:
                 claim_evidence_map[cid]["correction"] = str(correction)
+            if excerpt and "excerpt" not in claim_evidence_map[cid]:
+                claim_evidence_map[cid]["excerpt"] = str(excerpt)
+                claim_evidence_map[cid]["source_url"] = result.get("url", "")
+                claim_evidence_map[cid]["source_title"] = result.get("title", "")
 
         except Exception as exc:
             logger.warning(f"Stance classification failed: {exc}")
@@ -398,8 +407,10 @@ async def map_evidence(state: dict) -> dict:
     for ac in atomic_claims:
         cid = ac["claim_id"]
         ev_map = claim_evidence_map.get(cid, {"supporting": [], "contradicting": [], "neutral": []})
+        official_contradicted = ev_map.get("official_contradicted", False)
         status = _determine_claim_status(
             len(ev_map["supporting"]), len(ev_map["contradicting"]), len(ev_map["neutral"]),
+            official_contradicted=official_contradicted,
         )
         finding = ClaimFinding(
             claim_id=cid,
@@ -409,7 +420,10 @@ async def map_evidence(state: dict) -> dict:
             contradicting_evidence=ev_map["contradicting"],
             neutral_evidence=ev_map["neutral"],
             summary=_generate_finding_summary(ac["text"], status, ev_map),
-            correction=ev_map.get("correction")
+            correction=ev_map.get("correction"),
+            evidence_excerpt=ev_map.get("excerpt"),
+            evidence_source_url=ev_map.get("source_url"),
+            evidence_source_title=ev_map.get("source_title"),
         )
         claim_findings.append(finding.model_dump(mode="json"))
 
@@ -495,7 +509,7 @@ async def targeted_search(state: dict) -> dict:
                     continue
 
                 try:
-                    stance, relevance, _, correction = await llm.classify_evidence_stance(
+                    stance, relevance, _, correction, excerpt = await llm.classify_evidence_stance(
                         claim_text=gap["claim_text"], passage=passage,
                     )
                     if stance != EvidenceStance.IRRELEVANT:
@@ -617,14 +631,14 @@ async def generate_report(state: dict) -> dict:
     statuses = [f["status"] for f in state["claim_findings"]]
     if not statuses:
         overall_status = "UNKNOWN"
-    elif all(s == "SUPPORTED" for s in statuses):
-        overall_status = "ACCURATE"
-    elif all(s == "CONTRADICTED" for s in statuses):
-        overall_status = "INACCURATE"
+    elif all(s == "CORRECT" for s in statuses):
+        overall_status = "CORRECT"
+    elif all(s == "INCORRECT" for s in statuses):
+        overall_status = "INCORRECT"
     elif all(s == "UNVERIFIED" for s in statuses):
         overall_status = "UNVERIFIED"
     else:
-        overall_status = "PARTLY ACCURATE"
+        overall_status = "PARTLY CORRECT"
 
     report = InvestigationReport(
         original_claim=state["original_claim"],
@@ -664,33 +678,46 @@ def _infer_source_type(engine: SearchEngineType) -> SourceType:
     }.get(engine, SourceType.UNKNOWN)
 
 
-def _determine_claim_status(supporting: int, contradicting: int, neutral: int) -> ClaimStatus:
+def _determine_claim_status(
+    supporting: int, contradicting: int, neutral: int,
+    *, official_contradicted: bool = False,
+) -> ClaimStatus:
+    """Determine the factual status of a claim.
+    
+    If the official/provided source directly contradicts the claim,
+    it overrides any supporting evidence from other (possibly outdated) sources.
+    """
+    if official_contradicted:
+        return ClaimStatus.INCORRECT
     if supporting == 0 and contradicting == 0:
         return ClaimStatus.UNVERIFIED
     if contradicting > 0 and supporting > 0:
-        return ClaimStatus.MIXED_EVIDENCE
+        return ClaimStatus.PARTLY_CORRECT
     if contradicting > 0:
-        return ClaimStatus.CONTRADICTED
+        return ClaimStatus.INCORRECT
     if supporting > 0:
-        return ClaimStatus.SUPPORTED if neutral <= supporting else ClaimStatus.PARTIALLY_VERIFIED
-    return ClaimStatus.PARTIALLY_VERIFIED
+        return ClaimStatus.CORRECT
+    return ClaimStatus.UNVERIFIED
 
 
 def _generate_finding_summary(claim_text: str, status: ClaimStatus, ev_map: dict) -> str:
     s = len(ev_map.get("supporting", []))
     c = len(ev_map.get("contradicting", []))
     n = len(ev_map.get("neutral", []))
+    official = ev_map.get("official_contradicted", False)
     if status == ClaimStatus.UNVERIFIED:
         if n > 0:
-            return f"Found {n} neutral/irrelevant source(s), but no direct evidence to verify or refute this claim."
+            return f"Found {n} related source(s), but none directly confirm or refute this claim."
         return "No evidence was found to verify or refute this claim."
-    if status == ClaimStatus.SUPPORTED:
-        return f"Found {s} supporting source(s) for this claim."
-    if status == ClaimStatus.CONTRADICTED:
-        return f"Found {c} source(s) contradicting this claim."
-    if status == ClaimStatus.MIXED_EVIDENCE:
-        return f"Mixed evidence: {s} supporting and {c} contradicting source(s)."
-    return f"Partially verified: {s} supporting, {c} contradicting, {n} neutral source(s)."
+    if status == ClaimStatus.CORRECT:
+        return f"This claim is correct, confirmed by {s} source(s)."
+    if status == ClaimStatus.INCORRECT:
+        if official and s > 0:
+            return f"This claim is incorrect per the official source. {s} other source(s) repeat the wrong information."
+        return f"This claim is incorrect, contradicted by {c} source(s)."
+    if status == ClaimStatus.PARTLY_CORRECT:
+        return f"Mixed evidence: {s} source(s) confirm and {c} source(s) contradict parts of this claim."
+    return f"Evidence: {s} supporting, {c} contradicting, {n} neutral source(s)."
 
 
 def should_do_targeted_search(state: dict) -> str:

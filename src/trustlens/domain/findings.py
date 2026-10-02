@@ -7,11 +7,10 @@ from .investigation import SearchEngineType
 
 class ClaimStatus(str, Enum):
     """The verified status of a claim based on evidence."""
-    SUPPORTED = "SUPPORTED"
-    CONTRADICTED = "CONTRADICTED"
+    CORRECT = "CORRECT"
+    INCORRECT = "INCORRECT"
     UNVERIFIED = "UNVERIFIED"
-    PARTIALLY_VERIFIED = "PARTIALLY_VERIFIED"
-    MIXED_EVIDENCE = "MIXED_EVIDENCE"
+    PARTLY_CORRECT = "PARTLY_CORRECT"
 
 
 class EvidenceGap(DomainModel):
@@ -42,3 +41,6 @@ class ClaimFinding(DomainModel):
     neutral_evidence: list[UUID] = Field(default_factory=list)
     summary: str
     correction: str | None = None
+    evidence_excerpt: str | None = None
+    evidence_source_url: str | None = None
+    evidence_source_title: str | None = None

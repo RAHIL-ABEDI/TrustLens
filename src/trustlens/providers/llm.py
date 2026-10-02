@@ -64,32 +64,27 @@ CLAIM TO ANALYZE:
 {claim_text}
 """
 
-_STANCE_PROMPT = """You are TrustLens, an evidence analysis assistant.
+_STANCE_PROMPT = """You are TrustLens, a factual evidence analysis assistant.
 
-Given a claim and an evidence passage retrieved from the web, classify the relationship between them.
+Given a factual claim and an evidence passage, determine whether the passage confirms or refutes the claim.
 CRITICAL RULES:
-- Compare each assertion independently against direct evidence.
-- ONLY mark evidence as SUPPORTING or CONTRADICTING when the source passage *directly addresses* the specific claim.
-- When a source gives a clear alternative (e.g., a different date), mark the original claim CONTRADICTED and provide the correction.
-- Do not call it merely UNVERIFIED if there is a clear contradiction.
+- Mark SUPPORTING when the passage directly confirms the claim is factually correct.
+- Mark CONTRADICTING when the passage directly shows the claim is factually wrong. Provide the correction.
+- Mark NEUTRAL when the passage is related but does not directly confirm or refute the claim.
+- Mark IRRELEVANT when the passage is about a different topic entirely.
+- When a source gives a clear alternative value (e.g., a different date, a different number), the claim is CONTRADICTED. Do NOT call it merely NEUTRAL.
+- Extract the exact short quote from the passage that proves or disproves the claim.
 
 Claim: {claim_text}
 
 Evidence passage: {passage}
 
-Classify the stance as one of:
-- SUPPORTING: The evidence directly supports the claim
-- CONTRADICTING: The evidence contradicts or undermines the claim
-- NEUTRAL: The evidence is related but neither supports nor contradicts directly
-- IRRELEVANT: The evidence is not related to the specific claim or edition
-
-Also provide a relevance score from 0.0 to 1.0, and a correction if the claim is contradicted or partially verified.
-
 Respond ONLY with valid JSON:
 {{
     "stance": "SUPPORTING | CONTRADICTING | NEUTRAL | IRRELEVANT",
     "relevance_score": 0.0 to 1.0,
-    "correction": "The factual correction if any, else null",
+    "correction": "The factual correction if contradicted, else null",
+    "evidence_excerpt": "The exact short quote from the passage that is relevant to this claim",
     "reasoning": "brief explanation"
 }}
 """
@@ -222,7 +217,7 @@ class GeminiProvider:
 
     async def classify_evidence_stance(
         self, claim_text: str, passage: str
-    ) -> tuple[EvidenceStance, float, str, str | None]:
+    ) -> tuple[EvidenceStance, float, str, str | None, str | None]:
         """Classify the stance of an evidence passage relative to a claim.
 
         Args:
@@ -230,7 +225,7 @@ class GeminiProvider:
             passage: The evidence passage to classify.
 
         Returns:
-            Tuple of (stance, relevance_score, reasoning, correction).
+            Tuple of (stance, relevance_score, reasoning, correction, evidence_excerpt).
         """
         logger.debug("Classifying evidence stance")
         prompt = _STANCE_PROMPT.format(claim_text=claim_text, passage=passage)
@@ -240,7 +235,8 @@ class GeminiProvider:
         relevance = max(0.0, min(1.0, float(raw.get("relevance_score", 0.5))))
         reasoning = raw.get("reasoning", "")
         correction = raw.get("correction")
-        return stance, relevance, reasoning, correction
+        evidence_excerpt = raw.get("evidence_excerpt")
+        return stance, relevance, reasoning, correction, evidence_excerpt
 
     async def generate_investigation_plan(
         self,

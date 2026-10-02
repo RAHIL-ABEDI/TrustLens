@@ -193,22 +193,27 @@ def render_report(report: dict):
     # ── Claim Findings
     st.subheader("📊 Claim-by-Claim Findings")
     status_emoji = {
-        "SUPPORTED": "✅", "CONTRADICTED": "❌", "UNVERIFIED": "❓",
-        "PARTIALLY_VERIFIED": "⚠️", "MIXED_EVIDENCE": "🔄",
+        "CORRECT": "✅", "INCORRECT": "❌", "UNVERIFIED": "❓",
+        "PARTLY_CORRECT": "⚠️",
     }
     for finding in report.get("claim_findings", []):
         status = finding.get("status", "UNKNOWN")
         emoji = status_emoji.get(status, "❓")
         with st.expander(f"{emoji} {finding.get('claim_text', '')[:100]}", expanded=True):
-            st.markdown(f"**Status:** {emoji} {status}")
+            st.markdown(f"**Status:** {emoji} **{status}**")
             st.markdown(f"**Summary:** {finding.get('summary', '')}")
             if finding.get("correction"):
                 st.success(f"**Correction:** {finding.get('correction')}")
             
-            c1, c2, c3 = st.columns(3)
-            c1.markdown(f"✅ Supporting: **{len(finding.get('supporting_evidence', []))}**")
-            c2.markdown(f"❌ Contradicting: **{len(finding.get('contradicting_evidence', []))}**")
-            c3.markdown(f"➖ Neutral: **{len(finding.get('neutral_evidence', []))}**")
+            # Show evidence excerpt inline
+            excerpt = finding.get("evidence_excerpt")
+            src_url = finding.get("evidence_source_url")
+            src_title = finding.get("evidence_source_title", "")
+            if excerpt:
+                st.markdown("---")
+                st.markdown(f"📄 **Evidence excerpt:** \"{excerpt}\"")
+                if src_url:
+                    st.markdown(f"🔗 **Source:** [{src_title or src_url}]({src_url})")
 
     # ── Risk Indicators
     risks = report.get("risk_indicators", [])
@@ -233,7 +238,7 @@ def render_report(report: dict):
     evidence = report.get("evidence_collection", [])
     if evidence:
         st.subheader("📚 Evidence Sources")
-        st.caption(f"{len(evidence)} evidence pieces from live SerpApi search results.")
+        st.caption(f"{len(evidence)} evidence pieces from live search results and provided URLs.")
         stance_emoji = {"SUPPORTING": "✅", "CONTRADICTING": "❌", "NEUTRAL": "➖"}
         for ev in evidence:
             src = ev.get("source", {})
@@ -296,8 +301,8 @@ def main():
         "Submit a claim about a job offer, company, product, or online offer."
     )
     st.warning(
-        "⚠️ TrustLens presents evidence from public sources. "
-        "It does NOT make definitive scam/legitimate determinations.",
+        "⚠️ TrustLens checks factual claims against evidence. "
+        "It does not make a definitive judgment about whether a person or organization is a scam.",
         icon="⚠️",
     )
 

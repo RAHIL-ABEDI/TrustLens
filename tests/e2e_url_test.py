@@ -61,6 +61,10 @@ async def investigate_claim(workflow, claim: str, settings: TrustLensSettings):
                 print(f"    Summary: {f['summary']}")
                 if f.get('correction'):
                     print(f"    Correction: {f['correction']}")
+                if f.get('evidence_excerpt'):
+                    print(f"    Evidence: \"{f['evidence_excerpt']}\"")
+                if f.get('evidence_source_url'):
+                    print(f"    Source: {f['evidence_source_url']}")
             
             print("\nRisk Indicators:")
             for r in report.get("risk_indicators", []):
