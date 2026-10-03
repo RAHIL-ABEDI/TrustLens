@@ -1,64 +1,110 @@
+import pytest
 import asyncio
-from trustlens.providers.serpapi import SerpApiProvider
-from trustlens.domain.investigation import SearchEngineType
-from trustlens.config.settings import TrustLensSettings
+from unittest.mock import patch, MagicMock
 
-async def main():
-    settings = TrustLensSettings()
-    provider = SerpApiProvider(settings.serpapi_api_key)
-    
-    # 1. Test parameter mapping (mocked)
-    print("Testing Parameter Mapping...")
+from trustlens.domain.investigation import SearchEngineType
+from trustlens.providers.serpapi import SerpApiProvider, SearchResult, SerpApiError
+
+@pytest.fixture
+def provider():
+    # Use a dummy key for offline tests
+    return SerpApiProvider("dummy_key")
+
+def test_parameter_mapping(provider):
+    """Test that each engine maps to the correct parameters."""
+    # GOOGLE_SEARCH
     p1 = provider._build_params(SearchEngineType.GOOGLE_SEARCH, "test query")
-    assert p1["engine"] == "google" and p1["q"] == "test query"
+    assert p1["engine"] == "google"
+    assert p1["q"] == "test query"
     
+    # GOOGLE_FORUMS
     p2 = provider._build_params(SearchEngineType.GOOGLE_FORUMS, "test query")
-    assert p2["engine"] == "google" and p2["q"] == "test query" and p2["udm"] == "18"
+    assert p2["engine"] == "google_forums"
+    assert p2["q"] == "test query"
     
-    p3 = provider._build_params(SearchEngineType.GOOGLE_ADS, "test query")
-    assert p3["engine"] == "google_ads_transparency_center" and p3.get("q") is None and p3["text"] == "test query"
+    # GOOGLE_ADS text search
+    p3 = provider._build_params(SearchEngineType.GOOGLE_ADS, "test company")
+    assert p3["engine"] == "google_ads_transparency_center"
+    assert "q" not in p3
+    assert p3["text"] == "test company"
     
-    p4 = provider._build_params(SearchEngineType.GOOGLE_ADS, "AR1234567")
-    assert p4["engine"] == "google_ads_transparency_center" and p4.get("q") is None and p4["advertiser_id"] == "AR1234567"
+    # GOOGLE_ADS advertiser ID (matches AR format)
+    p4 = provider._build_params(SearchEngineType.GOOGLE_ADS, "AR123456789012")
+    assert p4["engine"] == "google_ads_transparency_center"
+    assert "q" not in p4
+    assert p4["advertiser_id"] == "AR123456789012"
+    assert "text" not in p4
     
-    print("Parameter mappings OK.")
-    
-    # 2. Test Normalization (mocked)
-    print("Testing Normalization...")
+    # GOOGLE_ADS false advertiser ID (e.g. starts with AR but isn't digits)
+    p5 = provider._build_params(SearchEngineType.GOOGLE_ADS, "ART COMPANY")
+    assert p5["engine"] == "google_ads_transparency_center"
+    assert "q" not in p5
+    assert p5["text"] == "ART COMPANY"
+    assert "advertiser_id" not in p5
+
+def test_normalization_ads(provider):
+    """Test parsing the documented Google Ads Transparency Center response."""
     mock_ads_data = {
-        "advertisers": [{"name": "TestCorp", "advertiser_id": "AR999", "location": "US", "link": "http://x"}],
-        "ads": [{"advertiser": {"name": "TestCorp"}, "text": "Buy now!", "ad_url": "http://y"}]
+        "advertiser": {
+            "name": "Mock Advertiser",
+            "advertiser_id": "AR123",
+            "location": "US"
+        },
+        "ad_creatives": [
+            {
+                "text": "Buy now!",
+                "ad_url": "http://x"
+            },
+            {
+                "images": [{"url": "http://img"}],
+                "ad_url": "http://y"
+            }
+        ]
     }
     ads_results = provider._normalize_ads(mock_ads_data)
-    assert len(ads_results) == 2
-    assert ads_results[0].title == "Advertiser: TestCorp"
-    assert ads_results[0].engine == SearchEngineType.GOOGLE_ADS
-    # 2.5 Test Context Extraction Limit
-    print("Testing Context Extraction...")
-    from trustlens.workflow.graph import _TextExtractor, understand_claim
-    # Just verify the hardcoded limit is 15000 in the code by parsing the file
-    with open("src/trustlens/workflow/graph.py", "r", encoding="utf-8") as f:
+    # The normalization should handle the exact fields.
+    assert len(ads_results) == 3
+    
+    # Result 1: Advertiser details
+    assert ads_results[0].title == "Advertiser: Mock Advertiser"
+    assert "AR123" in ads_results[0].snippet
+    
+    # Result 2: Ad creative 1
+    assert "Buy now" in ads_results[1].snippet
+    assert ads_results[1].title == "Ad from Mock Advertiser"
+    
+    # Result 3: Ad creative 2
+    assert "[Image Ad]" in ads_results[2].snippet
+    assert ads_results[2].url == "http://y"
+    
+def test_normalization_empty(provider):
+    """Test normalization handles empty results without errors."""
+    assert provider._normalize_ads({}) == []
+    assert provider._normalize_organic(SearchEngineType.GOOGLE_SEARCH, {}) == []
+
+@pytest.mark.asyncio
+async def test_search_error_handling(provider):
+    """Test HTTP error handling."""
+    from unittest.mock import AsyncMock
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        # AsyncClient context manager setup
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+        
+        with patch("httpx.AsyncClient.__aenter__", return_value=mock_client):
+            with pytest.raises(SerpApiError, match="authentication failed"):
+                await provider.search(SearchEngineType.GOOGLE_SEARCH, "test")
+
+def test_context_extraction_limit():
+    """Verify that graph.py bounds webpage extraction to 15000 characters."""
+    import os
+    graph_path = os.path.join(os.path.dirname(__file__), "..", "src", "trustlens", "workflow", "graph.py")
+    with open(graph_path, "r", encoding="utf-8") as f:
         graph_code = f.read()
-    assert "text[:15000]" in graph_code, "Context limit not increased to 15,000"
-    print("Context extraction limit is correctly 15000.")
     
-    # 3. Live tests (1 query per engine)
-    print("\nExecuting live tests (1 per engine)...")
-    engines = [
-        (SearchEngineType.GOOGLE_SEARCH, "trustlens"),
-        (SearchEngineType.GOOGLE_NEWS, "technology"),
-        (SearchEngineType.GOOGLE_JOBS, "software engineer"),
-        (SearchEngineType.GOOGLE_MAPS, "coffee shop"),
-        (SearchEngineType.GOOGLE_FORUMS, "reddit python"),
-        (SearchEngineType.GOOGLE_ADS, "Google"), # text search
-    ]
-    
-    for engine, query in engines:
-        try:
-            results = await provider.search(engine, query, num_results=1)
-            print(f"PASS: {engine.name} returned {len(results)} results.")
-        except Exception as e:
-            print(f"FAIL: {engine.name} - {str(e)}")
-            
-if __name__ == "__main__":
-    asyncio.run(main())
+    # The limit logic is applied on understand_claim via text[:15000]
+    assert "text[:15000]" in graph_code, "Expected single-page limit of 15000 not found."
+    # The aggregate bounds are also set to 40000
+    assert "MAX_AGGREGATE_CHARS = 40000" in graph_code, "Expected aggregate bound not found."

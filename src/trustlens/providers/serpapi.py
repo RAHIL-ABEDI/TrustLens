@@ -1,12 +1,13 @@
 """
 TrustLens SerpApi Provider — Multi-engine search adapter.
 
-Supports 5 SerpApi engines for claim investigation:
+Supports 6 SerpApi engines for claim investigation:
 - Google Search: General web search
 - Google Jobs: Job listing verification
 - Google News: Recent news coverage
 - Google Maps: Business/location verification
-- Google Forums: Community discussions (via Google discussions tab)
+- Google Forums: Community discussions (via google_forums engine)
+- Google Ads Transparency Center: Advertiser and ad creative verification
 """
 
 import asyncio
@@ -26,7 +27,7 @@ _ENGINE_PARAMS: dict[SearchEngineType, str] = {
     SearchEngineType.GOOGLE_JOBS: "google_jobs",
     SearchEngineType.GOOGLE_NEWS: "google_news",
     SearchEngineType.GOOGLE_MAPS: "google_maps",
-    SearchEngineType.GOOGLE_FORUMS: "google",  # Forums use Google with udm=18
+    SearchEngineType.GOOGLE_FORUMS: "google_forums",
     SearchEngineType.GOOGLE_ADS: "google_ads_transparency_center",
 }
 
@@ -151,12 +152,12 @@ class SerpApiProvider:
                 params["ll"] = location  # lat,lng format
 
         elif engine == SearchEngineType.GOOGLE_FORUMS:
-            params["udm"] = "18"  # Discussions and forums tab
-            params["num"] = num_results
+            params.pop("num", None) # Google Forums API uses num in a similar way, but let's just stick to base q
 
         elif engine == SearchEngineType.GOOGLE_ADS:
             params.pop("q", None)
-            if query.startswith("AR"): # naive check for advertiser ID
+            import re
+            if re.match(r'^AR\d+$', query):
                 params["advertiser_id"] = query
             else:
                 params["text"] = query
@@ -375,10 +376,27 @@ class SerpApiProvider:
                 raw_data=item,
             ))
             
-        # If searching by advertiser_id, it returns ads
-        for idx, item in enumerate(data.get("ads", [])):
-            adv = item.get("advertiser", {})
-            name = adv.get("name", "")
+        # Single advertiser (when searched by ID)
+        single_adv = data.get("advertiser")
+        if single_adv and isinstance(single_adv, dict):
+            name = single_adv.get("name", "")
+            adv_id = single_adv.get("advertiser_id", "")
+            location = single_adv.get("location", "")
+            snippet = f"Advertiser Details: {name} | ID: {adv_id} | Location: {location}"
+            results.append(SearchResult(
+                title=f"Advertiser: {name}",
+                url=single_adv.get("link", ""),
+                snippet=snippet,
+                source="Google Ads Transparency Center",
+                hostname="adstransparency.google.com",
+                engine=SearchEngineType.GOOGLE_ADS,
+                position=len(results) + 1,
+                raw_data=single_adv,
+            ))
+            
+        # ad_creatives (when searched by ID)
+        for idx, item in enumerate(data.get("ad_creatives", [])):
+            name = single_adv.get("name", "") if isinstance(single_adv, dict) else ""
             snippet_text = item.get("text", "")
             
             if not snippet_text:

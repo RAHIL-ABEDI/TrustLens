@@ -125,10 +125,37 @@ async def decompose_claim(state: dict) -> dict:
 
     import re
     clean_claim = re.sub(r'https?://[^\s]+', '', state["original_claim"]).strip()
-    if not clean_claim:
-        clean_claim = "Verify the main assertions made in the provided context."
+    
+    # Assemble context from provided URLs with an aggregate bound
+    provided_contexts = []
+    total_context_chars = 0
+    MAX_AGGREGATE_CHARS = 40000  # Aggregate bound to fit comfortably in LLM context
+    
+    for r in state.get("raw_search_results", []):
+        if r.get("raw_data", {}).get("is_provided_url"):
+            url = r.get("url", "")
+            snippet = r.get("snippet", "")
+            
+            remaining = MAX_AGGREGATE_CHARS - total_context_chars
+            if remaining <= 0:
+                break
+                
+            if len(snippet) > remaining:
+                snippet = snippet[:remaining] + "... [truncated]"
+                
+            provided_contexts.append(f"Source URL: {url}\nContent:\n{snippet}")
+            total_context_chars += len(snippet)
+            
+    if provided_contexts:
+        context_str = "\n\n---\n\n".join(provided_contexts)
+        if clean_claim:
+            claim_with_context = f"User Request: {clean_claim}\n\nProvided Context:\n{context_str}"
+        else:
+            claim_with_context = f"Extract and verify the main factual assertions from the provided context:\n\n{context_str}"
+    else:
+        claim_with_context = clean_claim or "Verify the main assertions made in the provided context."
         
-    decomposition = await llm.analyze_claim(clean_claim)
+    decomposition = await llm.analyze_claim(claim_with_context)
     atomic_dicts = [ac.model_dump(mode="json") for ac in decomposition.atomic_claims]
 
     logger.info(

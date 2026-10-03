@@ -109,7 +109,7 @@ IMPORTANT RULES:
 - Company existence claims → use GOOGLE_MAPS + GOOGLE_SEARCH + GOOGLE_ADS
 - Salary/payment claims → use GOOGLE_SEARCH + GOOGLE_FORUMS
 - Product claims → use GOOGLE_SEARCH + GOOGLE_NEWS + GOOGLE_FORUMS
-- Advertising claims/legitimacy → use GOOGLE_ADS + GOOGLE_SEARCH
+- Advertising claims/legitimacy → use GOOGLE_ADS + GOOGLE_SEARCH. Note: Ads evidence can support advertiser identity or ad-activity claims, but the presence or absence of ads is not treated as proof that a company is legitimate, fraudulent, or safe.
 - Generate 2-4 search queries per atomic claim, each targeted at a specific engine
 - Write queries as a real user would search (natural language), EXCEPT for GOOGLE_ADS where you should just use the company name or domain.
 
@@ -122,7 +122,7 @@ Respond ONLY with valid JSON:
         {{
             "claim_index": 0,
             "query": "search query text",
-            "engine": "GOOGLE_SEARCH | GOOGLE_JOBS | GOOGLE_NEWS | GOOGLE_MAPS | GOOGLE_FORUMS",
+            "engine": "GOOGLE_SEARCH | GOOGLE_JOBS | GOOGLE_NEWS | GOOGLE_MAPS | GOOGLE_FORUMS | GOOGLE_ADS",
             "rationale": "why this engine and query"
         }}
     ],
@@ -135,6 +135,7 @@ _RISK_PROMPT = """You are TrustLens, a risk analysis assistant.
 Based on the evidence gathered during an investigation, identify risk indicators.
 Do NOT assign a trust score or claim the result is a scam.
 CRITICAL: Don’t convert an incorrect date, minor factual error, or typo into a scam-risk indicator. TrustLens can avoid scam/legitimacy verdicts while still verifying facts.
+CRITICAL: Do NOT evaluate the legitimacy of a company based solely on whether they run Google Ads. The presence or absence of ads is not proof that a company is legitimate, fraudulent, or safe.
 
 Common valid risk patterns to look for:
 - Company has no verifiable physical address or online presence
