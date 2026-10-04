@@ -147,7 +147,8 @@ def render_sidebar():
             "- 💼 Google Jobs\n"
             "- 📰 Google News\n"
             "- 📍 Google Maps\n"
-            "- 💬 Google Forums"
+            "- 💬 Google Forums\\n"
+            "- 📢 Google Ads Transparency Center"
         )
         st.divider()
         st.caption("Track: Knowledge & Public Interest")

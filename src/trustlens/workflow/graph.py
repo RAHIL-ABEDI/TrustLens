@@ -702,7 +702,7 @@ def _infer_source_type(engine: SearchEngineType) -> SourceType:
         SearchEngineType.GOOGLE_JOBS: SourceType.JOB_LISTING,
         SearchEngineType.GOOGLE_MAPS: SourceType.BUSINESS_LISTING,
         SearchEngineType.GOOGLE_FORUMS: SourceType.FORUM_POST,
-        SearchEngineType.GOOGLE_ADS: SourceType.OFFICIAL_SITE,
+        SearchEngineType.GOOGLE_ADS: SourceType.ADVERTISER_REGISTRY,
     }.get(engine, SourceType.UNKNOWN)
 
 
