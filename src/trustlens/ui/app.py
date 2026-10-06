@@ -147,7 +147,7 @@ def render_sidebar():
             "- 💼 Google Jobs\n"
             "- 📰 Google News\n"
             "- 📍 Google Maps\n"
-            "- 💬 Google Forums\\n"
+            "- 💬 Google Forums\n"
             "- 📢 Google Ads Transparency Center"
         )
         st.divider()
@@ -186,7 +186,7 @@ def render_report(report: dict):
             "GOOGLE_NEWS": "📰 Google News",
             "GOOGLE_MAPS": "📍 Google Maps",
             "GOOGLE_FORUMS": "💬 Google Forums",
-            "GOOGLE_ADS": "📢 Google Ads",
+            "GOOGLE_ADS": "📢 Google Ads Transparency Center",
         }
         st.markdown("**SerpApi Engines Used:** " + " · ".join(
             engine_labels.get(e, e) for e in engines
