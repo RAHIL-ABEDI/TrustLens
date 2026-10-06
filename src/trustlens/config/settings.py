@@ -30,5 +30,4 @@ class TrustLensSettings(BaseSettings):
     # Logging
     log_level: str = "INFO"
 
-# Global settings instance
-settings = TrustLensSettings()
+# Settings should be instantiated explicitly where needed.

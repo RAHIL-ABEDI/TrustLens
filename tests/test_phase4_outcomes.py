@@ -6,7 +6,7 @@ Fully offline, mocked LLM and SerpApi providers.
 import pytest
 from unittest.mock import AsyncMock, patch
 
-from trustlens.config.settings import TrustLensSettings
+
 from trustlens.domain.claims import ClaimDecomposition, AtomicClaim, ClaimType
 from trustlens.domain.evidence import EvidenceStance, SourceType
 from trustlens.domain.investigation import InvestigationPlan, SearchTask, SearchEngineType
@@ -126,12 +126,19 @@ class FakeSerpApiProvider:
         return []
 
 
+from types import SimpleNamespace
+
 @pytest.fixture
 def base_settings():
-    return TrustLensSettings(
+    return SimpleNamespace(
         serpapi_api_key="mock",
         gemini_api_key="mock",
+        gemini_model="mock-model",
         max_search_calls=5,
+        max_results_per_query=10,
+        search_timeout_seconds=1,
+        enable_targeted_second_search=False,
+        max_second_search_calls=0,
     )
 
 
@@ -188,6 +195,10 @@ async def test_scenario_correct(MockSerpApi, MockGemini, mock_fetch, base_settin
         assert "serpapi.github.io" in f["evidence_source_url"]
         assert f["correction"] is None
         assert f["evidence_excerpt"] is not None
+        
+    excerpts = [f["evidence_excerpt"] for f in findings]
+    assert any("accepts solo participants" in e for e in excerpts)
+    assert any("teams of up to five members" in e for e in excerpts)
 
 
 @pytest.mark.asyncio
@@ -275,6 +286,52 @@ async def test_scenario_unverified(MockSerpApi, MockGemini, mock_fetch, base_set
     assert len(findings) == 1
     f = findings[0]
     assert f["status"] == ClaimStatus.UNVERIFIED
+    assert f["correction"] is None
     
     assert len(report["evidence_gaps"]) == 1
     assert "No evidence found" in report["evidence_gaps"][0]["gap_description"]
+    assert len(report["risk_indicators"]) == 0
+    
+    # Assert no report text contains 'scam' or 'fraud'
+    report_json = str(report).lower()
+    assert "scam" not in report_json
+    assert "fraud" not in report_json
+
+
+@pytest.mark.asyncio
+@patch("trustlens.workflow.graph._fetch_url_text")
+@patch("trustlens.workflow.state.GeminiProvider")
+@patch("trustlens.workflow.state.SerpApiProvider")
+async def test_scenario_unrelated_limitation_filtered(MockSerpApi, MockGemini, mock_fetch, base_settings):
+    """Safeguard: unrelated limitations are filtered."""
+    fake_llm = FakeGeminiProvider("CORRECT")
+    # Override analyze_risks to return a bad limitation
+    async def bad_analyze_risks(findings: str, evidence: str) -> dict:
+        return {
+            "risk_indicators": [],
+            "limitations": [
+                "Investigation based on publicly available web data only.",
+                "Could not verify the physical event organizers or the delivery of prize money."
+            ]
+        }
+    fake_llm.analyze_risks = bad_analyze_risks
+    
+    MockGemini.return_value = fake_llm
+    MockSerpApi.return_value = FakeSerpApiProvider()
+    mock_fetch.return_value = "Official rules: accepts solo participants and teams of up to five members."
+    
+    claim = "SerpApi India Hackathon 2026 accepts solo participants and teams of up to five members. https://serpapi.github.io/"
+    
+    configure_providers(base_settings)
+    workflow = create_investigation_workflow(base_settings)
+    
+    result = await workflow.ainvoke(initial_state(claim))
+    report = result["report"]
+    
+    # The bad limitation should be filtered out
+    limitations = report["limitations"]
+    assert "Investigation based on publicly available web data only." in limitations
+    
+    for lim in limitations:
+        assert "prize money" not in lim.lower()
+        assert "event organizers" not in lim.lower()

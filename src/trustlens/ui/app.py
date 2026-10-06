@@ -1,7 +1,5 @@
 """
 TrustLens — Streamlit Investigation Dashboard.
-
-Run with: streamlit run src/trustlens/ui/app.py
 """
 
 import asyncio
@@ -16,7 +14,7 @@ st.set_page_config(
     page_title="TrustLens — Digital Trust Investigator",
     page_icon="🔍",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # Add project root to path
@@ -35,27 +33,160 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
 
+# ── CSS ────────────────────────────────────────────────────────────
+
+def apply_custom_css():
+    st.markdown("""
+        <style>
+        :root {
+            --bg-color: #070B19;
+            --surface-color: #111936;
+            --primary-color: #7C5CFC;
+            --teal-accent: #14D9A5;
+            --warning-color: #FFB65E;
+            --incorrect-color: #FF6577;
+            --text-color: #F4F7FF;
+            --muted-text: #AAB4D6;
+        }
+        
+        /* Base page background */
+        .stApp {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(circle at 15% 50%, rgba(124, 92, 252, 0.08) 0%, transparent 50%),
+                radial-gradient(circle at 85% 30%, rgba(20, 217, 165, 0.05) 0%, transparent 50%);
+            color: var(--text-color);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* Glass panels */
+        .glass-panel {
+            background-color: rgba(17, 25, 54, 0.6);
+            border: 1px solid rgba(170, 180, 214, 0.1);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            transition: transform 0.2s ease;
+        }
+        
+        /* Hide default Streamlit elements that clutter */
+        header { visibility: hidden; }
+        
+        /* Headers & Text */
+        h1, h2, h3, h4, h5, h6, p, div, span {
+            color: var(--text-color) !important;
+        }
+        
+        .muted-text {
+            color: var(--muted-text) !important;
+            font-size: 0.9rem;
+        }
+        
+        /* Inputs */
+        div[data-baseweb="textarea"] {
+            background-color: var(--surface-color) !important;
+            border: 1px solid rgba(170, 180, 214, 0.2) !important;
+            border-radius: 8px;
+        }
+        div[data-baseweb="textarea"] textarea {
+            color: var(--text-color) !important;
+            font-size: 1.1rem !important;
+        }
+        
+        /* Primary Button */
+        button[kind="primary"] {
+            background-color: var(--primary-color) !important;
+            color: #FFFFFF !important;
+            border: none !important;
+            border-radius: 8px !important;
+            padding: 0.5rem 2rem !important;
+            font-weight: 600 !important;
+            transition: opacity 0.2s;
+        }
+        button[kind="primary"]:hover {
+            opacity: 0.9;
+        }
+        
+        /* Badges */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-weight: bold;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .status-badge.CORRECT { background-color: rgba(20, 217, 165, 0.15); color: var(--teal-accent) !important; border: 1px solid rgba(20, 217, 165, 0.3); }
+        .status-badge.INCORRECT { background-color: rgba(255, 101, 119, 0.15); color: var(--incorrect-color) !important; border: 1px solid rgba(255, 101, 119, 0.3); }
+        .status-badge.PARTLY_CORRECT { background-color: rgba(255, 182, 94, 0.15); color: var(--warning-color) !important; border: 1px solid rgba(255, 182, 94, 0.3); }
+        .status-badge.UNVERIFIED { background-color: rgba(170, 180, 214, 0.15); color: var(--muted-text) !important; border: 1px solid rgba(170, 180, 214, 0.3); }
+        
+        /* Outline Buttons for examples */
+        button[kind="secondary"] {
+            background-color: transparent !important;
+            border: 1px solid rgba(170, 180, 214, 0.3) !important;
+            color: var(--muted-text) !important;
+            border-radius: 8px !important;
+            transition: all 0.2s;
+        }
+        button[kind="secondary"]:hover {
+            border-color: var(--primary-color) !important;
+            color: var(--text-color) !important;
+        }
+        
+        /* Links */
+        a {
+            color: var(--primary-color) !important;
+            text-decoration: none !important;
+            transition: opacity 0.2s;
+        }
+        a:hover {
+            opacity: 0.8;
+            text-decoration: underline !important;
+        }
+
+        /* Expander */
+        .streamlit-expanderHeader {
+            background-color: rgba(17, 25, 54, 0.8) !important;
+            color: var(--text-color) !important;
+            border-radius: 8px;
+        }
+        
+        hr {
+            border-color: rgba(170, 180, 214, 0.1) !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+
 # ── Investigation Runner ────────────────────────────────────────────
 
-def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_container) -> dict:
-    """Run the investigation pipeline synchronously for Streamlit.
-
-    Uses a fresh event loop to avoid conflicts with Streamlit's own loop.
-    Shows progress updates via the status_container.
-    """
+def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_widget) -> dict:
+    """Run the investigation pipeline synchronously for Streamlit."""
     progress_steps = []
 
     def progress_callback(step: str, detail: str):
         progress_steps.append((step, detail))
-        status_container.write(f"{'🔄' if 'search' in step.lower() else '🧠'} **{step}**: {detail}")
+        # Map technical nodes to friendly UI stages
+        stage = "🔍 Understanding the claim"
+        if step in ["plan_investigation", "execute_searches"]:
+            stage = "🌐 Finding relevant sources"
+        elif step in ["map_evidence"]:
+            stage = "⚖️ Checking evidence"
+        elif step in ["detect_gaps", "targeted_search", "analyze_risks", "generate_report"]:
+            stage = "📋 Preparing findings"
+            
+        status_widget.update(label=stage)
+        st.caption(f"{detail}")
 
     # Configure providers (module-level registry)
     configure_providers(settings, progress_callback=progress_callback)
-
-    # Create and compile workflow
     workflow = create_investigation_workflow(settings)
 
-    # Initial state (only serializable data — no providers)
     initial_state = {
         "original_claim": claim,
         "claim_type": "",
@@ -80,308 +211,181 @@ def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_cont
         "error": "",
     }
 
-    # Run async workflow in a fresh loop
     loop = asyncio.new_event_loop()
     try:
-        result = loop.run_until_complete(workflow.ainvoke(initial_state))
-        return result
+        return loop.run_until_complete(workflow.ainvoke(initial_state))
     finally:
         loop.close()
 
 
-def _test_gemini_sync(settings: TrustLensSettings) -> None:
-    """Make one minimal structured-JSON Gemini API request. Raises Exception on failure."""
-    from trustlens.providers.llm import GeminiProvider
-    
-    async def do_test():
-        llm = GeminiProvider(
-            api_key=settings.gemini_api_key,
-            model_name=settings.gemini_model,
-        )
-        prompt = 'Respond with JSON: {"status": "ok"}'
-        # Using a direct call or _generate_json to test
-        return await llm._generate_json(prompt)
-    
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(do_test())
-    finally:
-        loop.close()
-
-
-
-# ── Sidebar ─────────────────────────────────────────────────────────
-
-def render_sidebar():
-    with st.sidebar:
-        st.title("🔍 TrustLens")
-        st.caption("Multi-Source Digital Trust Investigator")
-        st.divider()
-
-        st.markdown("### How it works")
-        st.markdown(
-            "1. 📝 Submit a claim to investigate\n"
-            "2. 🧠 AI decomposes it into sub-claims\n"
-            "3. 🗺️ Plans which SerpApi engines to query\n"
-            "4. 🌐 Searches live sources (max 5 calls)\n"
-            "5. 📊 Maps evidence to each claim\n"
-            "6. 🔎 Detects gaps, does follow-up searches\n"
-            "7. 📋 Generates transparent report"
-        )
-        st.divider()
-
-        st.markdown("### Example Claims")
-        examples = [
-            "ABC Technologies is offering a remote AI internship for ₹50,000/month and guarantees placement.",
-            "XYZ Corp launched a new crypto trading platform with guaranteed 30% monthly returns.",
-            "GlobalTech Solutions in Bangalore is hiring 500 freshers with ₹8 LPA starting salary.",
-        ]
-        for i, ex in enumerate(examples):
-            if st.button(ex[:55] + "...", key=f"example_{i}", use_container_width=True):
-                st.session_state["claim_input"] = ex
-
-        st.divider()
-        st.markdown("### SerpApi Engines")
-        st.markdown(
-            "- 🔍 Google Search\n"
-            "- 💼 Google Jobs\n"
-            "- 📰 Google News\n"
-            "- 📍 Google Maps\n"
-            "- 💬 Google Forums\n"
-            "- 📢 Google Ads Transparency Center"
-        )
-        st.divider()
-        st.caption("Track: Knowledge & Public Interest")
-        st.caption("SerpApi India Hackathon 2026")
-
-
-# ── Report Renderer ─────────────────────────────────────────────────
+# ── Render Logic ───────────────────────────────────────────────────
 
 def render_report(report: dict):
-    st.markdown("---")
-    st.header("🔍 Investigation Report")
-
-    # ── Claim Summary
-    st.subheader("📝 Claim Investigated")
-    st.info(report.get("original_claim", ""))
-
-    claim_type = report.get("claim_type", "GENERAL")
     overall = report.get("overall_status", "UNKNOWN")
-    timestamp = str(report.get("investigated_at", ""))[:19]
-    st.caption(f"**Overall Status:** {overall} | **Type:** {claim_type} | **Time:** {timestamp}")
-
-    # ── Stats
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sources Found", report.get("total_sources_found", 0))
-    col2.metric("Evidence Pieces", report.get("total_evidence_pieces", 0))
-    col3.metric("Engines Used", len(report.get("engines_used", [])))
-    col4.metric("Evidence Gaps", len(report.get("evidence_gaps", [])))
-
-    # ── Engines Used
-    engines = report.get("engines_used", [])
-    if engines:
-        engine_labels = {
-            "GOOGLE_SEARCH": "🔍 Google Search",
-            "GOOGLE_JOBS": "💼 Google Jobs",
-            "GOOGLE_NEWS": "📰 Google News",
-            "GOOGLE_MAPS": "📍 Google Maps",
-            "GOOGLE_FORUMS": "💬 Google Forums",
-            "GOOGLE_ADS": "📢 Google Ads Transparency Center",
-        }
-        st.markdown("**SerpApi Engines Used:** " + " · ".join(
-            engine_labels.get(e, e) for e in engines
-        ))
+    claim_type = report.get("claim_type", "GENERAL")
+    
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
+    st.markdown(f"### Investigation Outcome")
+    st.markdown(f"<span class='status-badge {overall}'>{overall}</span>", unsafe_allow_html=True)
+    
+    explanation_map = {
+        "CORRECT": "The evidence directly confirms this claim.",
+        "INCORRECT": "The evidence directly contradicts this claim.",
+        "PARTLY_CORRECT": "The evidence confirms some parts but contradicts others.",
+        "UNVERIFIED": "No reliable evidence was found to confirm or refute this claim."
+    }
+    st.markdown(f"<p class='muted-text' style='margin-top: 10px;'>{explanation_map.get(overall, '')}</p>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # ── Claim Findings
-    st.subheader("📊 Claim-by-Claim Findings")
-    status_emoji = {
-        "CORRECT": "✅", "INCORRECT": "❌", "UNVERIFIED": "❓",
-        "PARTLY_CORRECT": "⚠️",
-    }
+    st.markdown("### 📝 Findings")
     for finding in report.get("claim_findings", []):
         status = finding.get("status", "UNKNOWN")
-        emoji = status_emoji.get(status, "❓")
-        with st.expander(f"{emoji} {finding.get('claim_text', '')[:100]}", expanded=True):
-            st.markdown(f"**Status:** {emoji} **{status}**")
-            st.markdown(f"**Summary:** {finding.get('summary', '')}")
-            if finding.get("correction"):
-                st.success(f"**Correction:** {finding.get('correction')}")
-            
-            # Show evidence excerpt inline
-            excerpt = finding.get("evidence_excerpt")
-            src_url = finding.get("evidence_source_url")
-            src_title = finding.get("evidence_source_title", "")
-            if excerpt:
-                st.markdown("---")
-                st.markdown(f"📄 **Evidence excerpt:** \"{excerpt}\"")
-                if src_url:
-                    st.markdown(f"🔗 **Source:** [{src_title or src_url}]({src_url})")
+        st.markdown('<div class="glass-panel" style="padding: 16px;">', unsafe_allow_html=True)
+        st.markdown(f"**{finding.get('claim_text', '')}**")
+        st.markdown(f"<span class='status-badge {status}'>{status}</span>", unsafe_allow_html=True)
+        st.markdown(f"<p class='muted-text' style='margin-top: 8px;'>{finding.get('summary', '')}</p>", unsafe_allow_html=True)
+        
+        if finding.get("correction"):
+            st.markdown(f"<p style='color: var(--incorrect-color);'><strong>Correction:</strong> {finding.get('correction')}</p>", unsafe_allow_html=True)
+        
+        excerpt = finding.get("evidence_excerpt")
+        src_url = finding.get("evidence_source_url")
+        src_title = finding.get("evidence_source_title", "")
+        
+        if excerpt:
+            st.markdown(f"*{excerpt}*")
+            if src_url:
+                st.markdown(f"**Source:** <a href='{src_url}' target='_blank'>{src_title or src_url}</a>", unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ── Risk Indicators
-    risks = report.get("risk_indicators", [])
-    if risks:
-        st.subheader("⚠️ Risk Indicators")
-        st.caption("Patterns that may warrant caution — not definitive conclusions.")
-        sev_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}
-        for ri in risks:
-            severity = ri.get("severity", "LOW")
-            with st.expander(f"{sev_icon.get(severity, '⚪')} [{severity}] {ri.get('description', '')}"):
-                st.markdown(ri.get("explanation", ""))
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        gaps = report.get("evidence_gaps", [])
+        if gaps:
+            st.markdown("### 🔎 What we could not verify")
+            for gap in gaps:
+                st.markdown(f"<div class='glass-panel' style='padding: 12px; border-left: 3px solid var(--muted-text);'>"
+                            f"<strong>{gap.get('claim_text', '')}</strong><br>"
+                            f"<span class='muted-text'>{gap.get('gap_description', '')}</span></div>", 
+                            unsafe_allow_html=True)
+                            
+    with col2:
+        risks = report.get("risk_indicators", [])
+        if risks:
+            st.markdown("### ⚠️ Signals worth checking")
+            for ri in risks:
+                st.markdown(f"<div class='glass-panel' style='padding: 12px; border-left: 3px solid var(--warning-color);'>"
+                            f"<strong>{ri.get('description', '')}</strong><br>"
+                            f"<span class='muted-text'>{ri.get('explanation', '')}</span></div>", 
+                            unsafe_allow_html=True)
 
-    # ── Evidence Gaps
-    gaps = report.get("evidence_gaps", [])
-    if gaps:
-        st.subheader("🔎 Evidence Gaps")
-        st.caption("Claims for which no evidence could be found.")
-        for gap in gaps:
-            st.warning(f"**{gap.get('claim_text', '')}**\n\n{gap.get('gap_description', '')}")
-
-    # ── Evidence Sources (with clickable links)
+    # ── Sources
     evidence = report.get("evidence_collection", [])
     if evidence:
-        st.subheader("📚 Evidence Sources")
-        st.caption(f"{len(evidence)} evidence pieces from live search results and provided URLs.")
-        stance_emoji = {"SUPPORTING": "✅", "CONTRADICTING": "❌", "NEUTRAL": "➖"}
+        st.markdown(f"### 📚 Sources ({len(evidence)})")
         for ev in evidence:
             src = ev.get("source", {})
-            stance = ev.get("stance", "NEUTRAL")
-            emoji = stance_emoji.get(stance, "❓")
             engine = ev.get("search_engine", "")
+            if engine == "GOOGLE_ADS":
+                engine = "Google Ads Transparency Center"
             title = src.get("title", "Unknown")[:80]
-
-            with st.expander(f"{emoji} [{engine}] {title}"):
-                url = src.get("url", "")
+            url = src.get("url", "")
+            
+            with st.expander(f"[{engine}] {title}"):
                 if url:
-                    st.markdown(f"🔗 **Source:** [{url}]({url})")
-                
-                meta_parts = []
-                hostname = src.get("hostname", "")
-                if hostname:
-                    meta_parts.append(f"**Host:** {hostname}")
-                pub_date = src.get("publication_date")
-                if pub_date:
-                    meta_parts.append(f"**Date:** {pub_date}")
-                engagement = src.get("engagement_metadata")
-                if engagement:
-                    meta_parts.append(f"**Engagement:** {engagement}")
-                
-                if meta_parts:
-                    st.markdown(" | ".join(meta_parts))
-
-                st.markdown(f"**Stance:** {emoji} {stance} | **Relevance:** {ev.get('relevance_score', 0):.2f}")
-                st.markdown(f"**Passage:** {ev.get('passage', '')}")
-
-    # ── Limitations
-    limitations = report.get("limitations", [])
-    if limitations:
-        st.subheader("📌 Limitations")
-        for lim in limitations:
-            st.markdown(f"- {lim}")
+                    st.markdown(f"**URL:** [{url}]({url})")
+                meta = []
+                if src.get("source_type"): meta.append(f"Type: {src.get('source_type')}")
+                if src.get("publication_date"): meta.append(f"Date: {src.get('publication_date')}")
+                if meta:
+                    st.caption(" | ".join(meta))
+                st.markdown(f"> {ev.get('passage', '')}")
 
     # ── Methodology
-    methodology = report.get("methodology_note", "")
-    if methodology:
-        st.subheader("📋 Methodology")
-        st.markdown(methodology)
-
-    # ── Search Tasks (collapsed)
-    tasks = report.get("search_tasks_executed", [])
-    if tasks:
-        with st.expander(f"🔧 Search Tasks Executed ({len(tasks)})"):
-            for t in tasks:
-                st.markdown(f"- **[{t.get('engine', '')}]** `{t.get('query', '')}` — {t.get('rationale', '')}")
+    with st.expander("Methodology & Limitations"):
+        st.markdown("**Methodology**")
+        st.write(report.get("methodology_note", ""))
+        limitations = report.get("limitations", [])
+        if limitations:
+            st.markdown("**Limitations**")
+            for lim in limitations:
+                st.markdown(f"- {lim}")
 
 
-# ── Main ────────────────────────────────────────────────────────────
+def set_claim(claim_text: str):
+    st.session_state["claim_input"] = claim_text
+
+
+# ── Main ──────────────────────────────────────────────────────────
 
 def main():
-    render_sidebar()
+    apply_custom_css()
 
-    st.title("🔍 TrustLens")
-    st.markdown(
-        "**Investigate online claims with multi-source evidence.**  \n"
-        "Submit a claim about a job offer, company, product, or online offer."
-    )
-    st.warning(
-        "⚠️ TrustLens checks factual claims against evidence. "
-        "It does not make a definitive judgment about whether a person or organization is a scam.",
-        icon="⚠️",
-    )
+    st.markdown("<h1 style='text-align: center; color: var(--primary-color) !important; font-size: 3rem;'>🔍 TrustLens</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center; font-weight: 400; margin-bottom: 8px;'>Investigate digital claims with traceable evidence.</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; margin-bottom: 40px;' class='muted-text'>TrustLens checks evidence from live sources and does not issue a generic trust score.</p>", unsafe_allow_html=True)
 
-    # Settings (never display keys)
-    settings = TrustLensSettings()
-    missing = []
-    if not settings.serpapi_api_key or settings.serpapi_api_key == "your_serpapi_key_here":
-        missing.append("SERPAPI_API_KEY")
-    if not settings.gemini_api_key or settings.gemini_api_key == "your_gemini_key_here":
-        missing.append("GEMINI_API_KEY")
-
-    if missing:
-        st.error(f"Missing API key(s): **{', '.join(missing)}**. Set them in `.env` and restart.")
+    # Settings check
+    try:
+        settings = TrustLensSettings()
+        missing = []
+        if not settings.serpapi_api_key or settings.serpapi_api_key == "your_serpapi_key_here": missing.append("SERPAPI_API_KEY")
+        if not settings.gemini_api_key or settings.gemini_api_key == "your_gemini_key_here": missing.append("GEMINI_API_KEY")
+        
+        if missing:
+            st.error(f"Missing API keys in `.env`: **{', '.join(missing)}**")
+            return
+    except Exception as e:
+        st.error("Could not load application settings.")
         return
 
-    st.success("✅ API keys configured. Ready to investigate.", icon="🔑")
-
-    # Claim input
-    st.markdown("### Enter a claim to investigate")
+    st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     claim = st.text_area(
-        "Claim",
+        "Enter a claim",
         value=st.session_state.get("claim_input", ""),
-        height=100,
-        placeholder="e.g., ABC Technologies is offering a remote AI internship for ₹50,000/month...",
+        height=120,
+        placeholder="e.g., The SerpApi India Hackathon 2026 submission deadline is October 5, 2026...",
         label_visibility="collapsed",
     )
-
-    investigate = st.button(
-        "🔍 Investigate",
-        type="primary",
-        disabled=not claim.strip(),
-    )
+    
+    col_btn, _ = st.columns([1, 4])
+    with col_btn:
+        investigate = st.button("Investigate claim", type="primary", disabled=not claim.strip(), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown("<p class='muted-text'>Try an example:</p>", unsafe_allow_html=True)
+    ex1, ex2, ex3 = st.columns(3)
+    with ex1:
+        if st.button("Hackathon rules limit teams to 3 members.", use_container_width=True):
+            set_claim("SerpApi India Hackathon 2026 limits teams to 3 members.")
+    with ex2:
+        if st.button("Crypto offer with guaranteed 30% monthly returns.", use_container_width=True):
+            set_claim("XYZ Corp launched a new crypto trading platform with guaranteed 30% monthly returns.")
+    with ex3:
+        if st.button("Remote AI internship paying ₹50,000/month.", use_container_width=True):
+            set_claim("ABC Technologies is offering a remote AI internship for ₹50,000/month and guarantees placement.")
+            
+    st.markdown("<br><p style='text-align: center;' class='muted-text'><b>How it works:</b> Break down claim &rarr; Search evidence &rarr; Show traceable findings</p>", unsafe_allow_html=True)
 
     if investigate and claim.strip():
-        with st.status("🔍 Investigating claim...", expanded=True) as status_widget:
-            status_widget.write("📝 Checking Gemini API...")
-            
-            try:
-                _test_gemini_sync(settings)
-                status_widget.write("✅ Gemini API check passed.")
-            except Exception as exc:
-                status_widget.update(label="❌ Investigation failed", state="error")
-                err_msg = str(exc)
-                if settings.serpapi_api_key:
-                    err_msg = err_msg.replace(settings.serpapi_api_key, "[REDACTED]")
-                if settings.gemini_api_key:
-                    err_msg = err_msg.replace(settings.gemini_api_key, "[REDACTED]")
-                
-                st.error(f"**Gemini API Error:** {err_msg}")
-                st.info(f"**Required Next Step:** The configured model `{settings.gemini_model}` might be unavailable or rate-limited for your API key. Check your Google AI Studio quota, or change the model in your `.env` file and restart.")
-                logger.exception("Gemini API check failed")
-                return
-
-            status_widget.write("📝 Starting investigation workflow...")
-
+        st.markdown("---")
+        with st.status("Initializing investigation...", expanded=True) as status_widget:
             try:
                 result = _run_investigation_sync(claim.strip(), settings, status_widget)
-
                 if result.get("report"):
-                    status_widget.update(label="✅ Investigation complete!", state="complete")
+                    status_widget.update(label="Investigation complete", state="complete")
                     st.session_state["last_report"] = result["report"]
                 else:
-                    status_widget.update(label="❌ Investigation incomplete", state="error")
-                    st.error(f"Error: {result.get('error', 'Unknown')}")
-
+                    status_widget.update(label="Investigation incomplete", state="error")
+                    st.error(f"Error: We could not complete the investigation. Please try again.")
             except Exception as exc:
-                status_widget.update(label="❌ Investigation failed", state="error")
-                err_msg = str(exc)
-                # Never show API keys in error messages
-                if settings.serpapi_api_key:
-                    err_msg = err_msg.replace(settings.serpapi_api_key, "[REDACTED]")
-                if settings.gemini_api_key:
-                    err_msg = err_msg.replace(settings.gemini_api_key, "[REDACTED]")
-                st.error(f"Error: {err_msg}")
-                logger.exception("Investigation failed")
+                status_widget.update(label="Investigation failed", state="error")
+                st.error("An error occurred during the investigation. Please check your network or API quota.")
+                logger.error(f"Investigation error: {exc}")
 
-    # Display saved report
     if "last_report" in st.session_state:
         render_report(st.session_state["last_report"])
 

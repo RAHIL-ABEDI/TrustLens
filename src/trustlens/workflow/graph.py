@@ -616,10 +616,27 @@ async def analyze_risks(state: dict) -> dict:
             ).model_dump(mode="json")
             for ri in result.get("risk_indicators", [])
         ]
-        limitations = result.get("limitations", [
+        approved_limitations = [
             "Investigation based on publicly available web data only.",
             "Search results may not represent the complete picture.",
-        ])
+        ]
+        
+        allowed_context = state["original_claim"].lower()
+        for g in state.get("evidence_gaps", []):
+            allowed_context += " " + g.get("gap_description", "").lower() + " " + g.get("claim_text", "").lower()
+            
+        for lim in result.get("limitations", []):
+            if lim in approved_limitations:
+                continue
+                
+            lim_lower = lim.lower()
+            unrelated_terms = ["prize", "organizer", "venue", "physical", "legitimacy", "delivery", "scam", "fraud"]
+            has_unrelated = any(term in lim_lower and term not in allowed_context for term in unrelated_terms)
+            
+            if not has_unrelated:
+                approved_limitations.append(lim)
+                
+        limitations = approved_limitations
     except Exception as exc:
         logger.error(f"Risk analysis failed: {exc}")
         risk_indicators = []
