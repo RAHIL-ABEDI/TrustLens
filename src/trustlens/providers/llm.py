@@ -144,6 +144,8 @@ Common valid risk patterns to look for:
 - Request for upfront payment or personal information
 - Recently registered domain
 
+CRITICAL: A limitation must stay strictly within the scope of the submitted claim and available evidence, or describe a genuine method limitation (e.g., search engine limits). Do not introduce unrelated concepts like event organizers, prize delivery, or physical venues unless the user explicitly asked about them.
+
 If the claim is just factually wrong (e.g. wrong date, wrong organizer) but has no malicious scam markers, output an EMPTY list for risk_indicators.
 
 Claim findings:

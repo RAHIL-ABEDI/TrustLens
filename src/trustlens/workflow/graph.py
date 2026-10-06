@@ -665,7 +665,7 @@ async def generate_report(state: dict) -> dict:
     elif all(s == "UNVERIFIED" for s in statuses):
         overall_status = "UNVERIFIED"
     else:
-        overall_status = "PARTLY CORRECT"
+        overall_status = "PARTLY_CORRECT"
 
     report = InvestigationReport(
         original_claim=state["original_claim"],
