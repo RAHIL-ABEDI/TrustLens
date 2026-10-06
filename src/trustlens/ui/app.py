@@ -226,7 +226,8 @@ def render_report(report: dict):
     
     st.markdown('<div class="glass-panel">', unsafe_allow_html=True)
     st.markdown(f"### Investigation Outcome")
-    st.markdown(f"<span class='status-badge {overall}'>{overall}</span>", unsafe_allow_html=True)
+    overall_ui = overall.replace("_", " ")
+    st.markdown(f"<span class='status-badge {overall}'>{overall_ui}</span>", unsafe_allow_html=True)
     
     explanation_map = {
         "CORRECT": "The evidence directly confirms this claim.",
@@ -243,7 +244,8 @@ def render_report(report: dict):
         status = finding.get("status", "UNKNOWN")
         st.markdown('<div class="glass-panel" style="padding: 16px;">', unsafe_allow_html=True)
         st.markdown(f"**{finding.get('claim_text', '')}**")
-        st.markdown(f"<span class='status-badge {status}'>{status}</span>", unsafe_allow_html=True)
+        status_ui = status.replace("_", " ")
+        st.markdown(f"<span class='status-badge {status}'>{status_ui}</span>", unsafe_allow_html=True)
         st.markdown(f"<p class='muted-text' style='margin-top: 8px;'>{finding.get('summary', '')}</p>", unsafe_allow_html=True)
         
         if finding.get("correction"):
@@ -294,10 +296,13 @@ def render_report(report: dict):
             title = src.get("title", "Unknown")[:80]
             url = src.get("url", "")
             
-            with st.expander(f"[{engine}] {title}"):
+            stance = ev.get("stance", "NEUTRAL")
+            stance_emoji = {"SUPPORTING": "✅", "CONTRADICTING": "❌", "NEUTRAL": "➖"}.get(stance, "❓")
+            
+            with st.expander(f"{stance_emoji} [{engine}] {title}"):
                 if url:
                     st.markdown(f"**URL:** [{url}]({url})")
-                meta = []
+                meta = [f"Stance: **{stance}**"]
                 if src.get("source_type"): meta.append(f"Type: {src.get('source_type')}")
                 if src.get("publication_date"): meta.append(f"Date: {src.get('publication_date')}")
                 if meta:
