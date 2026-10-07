@@ -1,8 +1,9 @@
 """
-TrustLens — Premium Streamlit Investigation Dashboard.
+TrustLens — Streamlit Investigation Desk.
 """
 
 import asyncio
+import html
 import logging
 import sys
 from pathlib import Path
@@ -32,185 +33,89 @@ from trustlens.workflow.graph import create_investigation_workflow
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
+_STYLES_PATH = Path(__file__).with_name("styles.css")
 
-# ── Premium CSS (Local Only, Animations, Flexbox) ──────────────────
-def apply_custom_css():
-    st.markdown("""
-        <style>
-        :root {
-            --bg-color: #050814;
-            --surface-color: #0E1529;
-            --surface-hover: #151F3D;
-            --primary-color: #7C5CFC;
-            --primary-glow: rgba(124, 92, 252, 0.4);
-            --teal-accent: #14D9A5;
-            --warning-color: #FFB65E;
-            --incorrect-color: #FF6577;
-            --text-color: #F4F7FF;
-            --muted-text: #8A97C3;
-            --border-color: rgba(138, 151, 195, 0.15);
-        }
-        
-        /* Base page background */
-        .stApp {
-            background-color: var(--bg-color);
-            background-image: 
-                radial-gradient(circle at 15% 0%, rgba(124, 92, 252, 0.06) 0%, transparent 40%),
-                radial-gradient(circle at 85% 100%, rgba(20, 217, 165, 0.04) 0%, transparent 40%);
-            color: var(--text-color);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-        }
+# ── Display constants ───────────────────────────────────────────────
+VERDICTS = {
+    "CORRECT": ("Supported", "The evidence collected leans towards supporting this claim.", "ok"),
+    "INCORRECT": ("Contradicted", "The evidence collected contradicts this claim.", "bad"),
+    "PARTLY_CORRECT": ("Mixed Evidence", "The available evidence is mixed. Some parts hold up, while others are contradicted.", "mixed"),
+    "UNVERIFIED": ("Insufficient Evidence", "We found relevant information, but the available evidence is not strong enough to confidently support or contradict this claim.", "unknown"),
+}
+UNKNOWN_VERDICT = ("Unknown", "The investigation did not produce a verdict.", "unknown")
 
-        /* Animations */
-        @keyframes slideUpFade {
-            0% { opacity: 0; transform: translateY(15px); }
-            100% { opacity: 1; transform: translateY(0); }
-        }
-        
-        @keyframes pulseGlow {
-            0% { box-shadow: 0 0 0 0 var(--primary-glow); }
-            70% { box-shadow: 0 0 0 10px rgba(124, 92, 252, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(124, 92, 252, 0); }
-        }
+ENGINES = ["Search", "Jobs", "News", "Maps", "Forums", "Ads Transparency"]
+ENGINE_LABELS = {
+    "GOOGLE_SEARCH": "Google Search",
+    "GOOGLE_JOBS": "Google Jobs",
+    "GOOGLE_NEWS": "Google News",
+    "GOOGLE_MAPS": "Google Maps",
+    "GOOGLE_FORUMS": "Google Forums",
+    "GOOGLE_ADS": "Ads Transparency",
+}
+STANCE_LABELS = {"SUPPORTING": "Supports", "CONTRADICTING": "Contradicts", "NEUTRAL": "Neutral"}
+STANCE_VERDICT_CLASS = {"SUPPORTING": "CORRECT", "CONTRADICTING": "INCORRECT", "NEUTRAL": "UNVERIFIED"}
 
-        .animate-in { animation: slideUpFade 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
-        .delay-1 { animation-delay: 0.1s; }
-        .delay-2 { animation-delay: 0.2s; }
-        .delay-3 { animation-delay: 0.3s; }
-        .delay-4 { animation-delay: 0.4s; }
+EXAMPLES = [
+    ("Policy", "Hackathon rules limit teams to 3 members",
+     "SerpApi India Hackathon 2026 limits teams to 3 members."),
+    ("Investment", "Crypto platform with guaranteed 30% returns",
+     "XYZ Corp launched a new crypto trading platform with guaranteed 30% monthly returns."),
+    ("Job offer", "Remote AI internship paying ₹150k/month",
+     "ABC Technologies is offering a remote AI internship for ₹150,000/month and guarantees placement."),
+]
 
-        /* Typography */
-        h1, h2, h3, h4, h5, h6, p, div, span { color: var(--text-color) !important; }
-        
-        .gradient-text {
-            background: linear-gradient(135deg, #F4F7FF 0%, #AAB4D6 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        
-        .brand-text {
-            background: linear-gradient(135deg, #7C5CFC 0%, #14D9A5 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            font-weight: 800;
-        }
-        
-        .muted-text { color: var(--muted-text) !important; font-size: 0.95rem; line-height: 1.5; }
-        .micro-header { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted-text); font-weight: 600; margin-bottom: 4px; display: block; }
+STAGES = {
+    "plan_investigation": "Planning searches across live sources",
+    "execute_searches": "Querying search engines",
+    "map_evidence": "Cross-referencing evidence against each claim",
+    "detect_gaps": "Checking for evidence gaps",
+    "targeted_search": "Running targeted follow-up searches",
+    "analyze_risks": "Analysing risk signals",
+    "generate_report": "Writing the report",
+}
 
-        /* Glass panels */
-        .glass-panel {
-            background-color: rgba(14, 21, 41, 0.7);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 24px;
-            margin-bottom: 20px;
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            transition: all 0.3s ease;
-        }
-        
-        .glass-panel:hover {
-            border-color: rgba(124, 92, 252, 0.3);
-            background-color: rgba(21, 31, 61, 0.8);
-            transform: translateY(-2px);
-            box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.3), 0 0 20px rgba(124, 92, 252, 0.1);
-        }
-        
-        /* Interactive Cards */
-        .source-card {
-            background-color: var(--surface-color);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 12px;
-            transition: all 0.2s;
-            border-left: 4px solid var(--muted-text);
-        }
-        .source-card:hover { border-color: var(--primary-color); background-color: var(--surface-hover); }
-        .source-card.SUP { border-left-color: var(--teal-accent); }
-        .source-card.CON { border-left-color: var(--incorrect-color); }
-        
-        /* Hide default Streamlit elements that clutter */
-        header { visibility: hidden; }
-        .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: rgba(14,21,41,0.5); padding: 8px; border-radius: 12px; }
-        .stTabs [data-baseweb="tab"] { border-radius: 8px !important; padding: 8px 16px !important; border: 1px solid transparent !important; }
-        .stTabs [aria-selected="true"] { background-color: var(--primary-color) !important; color: white !important; border-color: rgba(255,255,255,0.1) !important; }
-        
-        /* Inputs & Buttons */
-        div[data-baseweb="textarea"] {
-            background-color: rgba(14, 21, 41, 0.8) !important;
-            border: 2px solid var(--border-color) !important;
-            border-radius: 12px;
-            transition: border-color 0.2s;
-        }
-        div[data-baseweb="textarea"]:focus-within { border-color: var(--primary-color) !important; box-shadow: 0 0 0 1px var(--primary-color) !important; }
-        div[data-baseweb="textarea"] textarea { color: var(--text-color) !important; font-size: 1.15rem !important; line-height: 1.6 !important; padding: 12px !important; }
-        
-        button[kind="primary"] {
-            background: linear-gradient(135deg, #7C5CFC 0%, #5B3AEB 100%) !important;
-            color: #FFFFFF !important;
-            border: none !important;
-            border-radius: 12px !important;
-            padding: 0.75rem 2rem !important;
-            font-weight: 600 !important;
-            font-size: 1.05rem !important;
-            transition: all 0.3s !important;
-            box-shadow: 0 4px 15px rgba(124, 92, 252, 0.3) !important;
-        }
-        button[kind="primary"]:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(124, 92, 252, 0.5) !important; }
-        
-        /* Badges */
-        .status-badge {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            backdrop-filter: blur(4px);
-        }
-        .status-badge.CORRECT { background-color: rgba(20, 217, 165, 0.15); color: var(--teal-accent) !important; border: 1px solid rgba(20, 217, 165, 0.4); box-shadow: 0 0 10px rgba(20,217,165,0.1); }
-        .status-badge.INCORRECT { background-color: rgba(255, 101, 119, 0.15); color: var(--incorrect-color) !important; border: 1px solid rgba(255, 101, 119, 0.4); box-shadow: 0 0 10px rgba(255,101,119,0.1); }
-        .status-badge.PARTLY_CORRECT { background-color: rgba(255, 182, 94, 0.15); color: var(--warning-color) !important; border: 1px solid rgba(255, 182, 94, 0.4); box-shadow: 0 0 10px rgba(255,182,94,0.1); }
-        .status-badge.UNVERIFIED { background-color: rgba(138, 151, 195, 0.15); color: #C2C9E0 !important; border: 1px solid rgba(138, 151, 195, 0.4); }
-        
-        /* Stance Distribution Bar */
-        .stance-bar-container { display: flex; width: 100%; height: 8px; border-radius: 4px; overflow: hidden; margin-top: 12px; background-color: rgba(255,255,255,0.05); }
-        .stance-sup { background-color: var(--teal-accent); transition: width 1s ease-in-out; }
-        .stance-con { background-color: var(--incorrect-color); transition: width 1s ease-in-out; }
-        .stance-neu { background-color: var(--muted-text); transition: width 1s ease-in-out; }
 
-        /* KPI Flexbox */
-        .kpi-row { display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
-        .kpi-card { flex: 1; min-width: 140px; background-color: rgba(14, 21, 41, 0.6); border: 1px solid var(--border-color); border-radius: 12px; padding: 16px; text-align: center; }
-        .kpi-value { font-size: 2.2rem; font-weight: 800; color: var(--text-color); line-height: 1.1; margin-bottom: 4px; }
-        
-        a { color: var(--primary-color) !important; text-decoration: none !important; transition: opacity 0.2s; }
-        a:hover { opacity: 0.8; text-decoration: underline !important; }
-        hr { border-color: rgba(138, 151, 195, 0.1) !important; margin: 32px 0; }
-        </style>
-    """, unsafe_allow_html=True)
+# ── Helpers ─────────────────────────────────────────────────────────
+def esc(value) -> str:
+    """Escape untrusted text (claims, LLM output, scraped passages) for HTML."""
+    return html.escape(str(value or ""), quote=True)
+
+
+def render_html(markup: str) -> None:
+    """Render HTML via st.markdown.
+
+    Lines are stripped and joined so Markdown never treats indented
+    HTML as a code block (the source of the raw-HTML leak).
+    """
+    compact = " ".join(line.strip() for line in markup.splitlines() if line.strip())
+    st.markdown(compact, unsafe_allow_html=True)
+
+
+def apply_custom_css() -> None:
+    st.markdown(f"<style>{_STYLES_PATH.read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
+
+
+def verdict_meta(status: str) -> tuple[str, str, str]:
+    return VERDICTS.get(status, UNKNOWN_VERDICT)
+
+
+def stamp(status: str, large: bool = False) -> str:
+    label, _, color_class = verdict_meta(status)
+    size = " lg" if large else ""
+    return f'<span class="stamp{size} v-{color_class}">{esc(label)}</span>'
+
+
+def section_label(text: str) -> None:
+    render_html(f'<div class="section-label"><span class="t-kicker">{esc(text)}</span></div>')
 
 
 # ── Investigation Runner ────────────────────────────────────────────
 def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_widget) -> dict:
-    progress_steps = []
     def progress_callback(step: str, detail: str):
-        progress_steps.append((step, detail))
-        stage = "🔍 Understanding the claim & extracting entities..."
-        if step in ["plan_investigation", "execute_searches"]:
-            stage = "🌐 Polling Search Engines & Aggregating Data..."
-        elif step in ["map_evidence"]:
-            stage = "⚖️ Cross-Referencing Evidence & Fact-Checking..."
-        elif step in ["detect_gaps", "targeted_search", "analyze_risks", "generate_report"]:
-            stage = "📋 Synthesizing Final Report..."
-        status_widget.update(label=stage)
-        st.caption(f"<span style='color: var(--primary-color);'>→</span> {detail}", unsafe_allow_html=True)
+        status_widget.update(label=STAGES.get(step, "Understanding the claim"))
+        st.caption(f"<span class='trace-line'><span class='arrow'>→</span>{esc(detail)}</span>",
+                   unsafe_allow_html=True)
 
     configure_providers(settings, progress_callback=progress_callback)
     workflow = create_investigation_workflow(settings)
@@ -229,197 +134,327 @@ def _run_investigation_sync(claim: str, settings: TrustLensSettings, status_widg
 
 
 # ── Report Rendering UI ─────────────────────────────────────────────
-def render_metrics(report: dict):
+def render_verdict_header(report: dict, claim: str) -> None:
+    status = report.get("overall_status", "UNKNOWN")
+    label, description, color_class = verdict_meta(status)
+    claim_html = f'<div class="verdict-claim">"{esc(claim)}"</div>' if claim else ""
+    
+    # Calculate evidence balance
+    evidence = report.get("evidence_collection", [])
+    sup = sum(1 for e in evidence if e.get("stance") == "SUPPORTING")
+    con = sum(1 for e in evidence if e.get("stance") == "CONTRADICTING")
+    neu = sum(1 for e in evidence if e.get("stance") == "NEUTRAL")
+    total = sup + con + neu
+    
+    balance_html = ""
+    if total > 0:
+        w_sup = (sup / total) * 100
+        w_con = (con / total) * 100
+        w_neu = (neu / total) * 100
+        balance_html = f"""
+        <div class="evidence-balance-card rise" style="animation-delay: 0.1s;">
+            <div class="t-kicker mb-3">Evidence Balance</div>
+            <div class="balance-bars">
+                <div class="balance-row"><div class="b-label t-meta">Supporting</div><div class="b-track"><div class="b-fill bg-ok" style="width: {w_sup}%"></div></div><div class="b-count">{sup}</div></div>
+                <div class="balance-row"><div class="b-label t-meta">Contradicting</div><div class="b-track"><div class="b-fill bg-bad" style="width: {w_con}%"></div></div><div class="b-count">{con}</div></div>
+                <div class="balance-row"><div class="b-label t-meta">Contextual</div><div class="b-track"><div class="b-fill bg-unknown" style="width: {w_neu}%"></div></div><div class="b-count">{neu}</div></div>
+            </div>
+        </div>
+        """
+
+    sources = report.get("total_sources_found", 0)
+    
+    render_html(f"""
+        <div class="result-header rise">
+            <span class="t-kicker">Investigation Result</span>
+            {claim_html}
+        </div>
+        
+        <div class="assessment-grid">
+            <section class="assessment-card v-{color_class} rise" aria-label="Overall verdict">
+                <div class="assessment-top">
+                    {stamp(status, large=True)}
+                    <span class="t-meta">Sources examined: {sources}</span>
+                </div>
+                <p class="assessment-desc">{esc(description)}</p>
+            </section>
+            
+            {balance_html}
+        </div>
+    """)
+
+
+def render_metrics(report: dict) -> None:
     sources = report.get("total_sources_found", 0)
     engines = len(report.get("engines_used", []))
     gaps = len(report.get("evidence_gaps", []))
     risks = len(report.get("risk_indicators", []))
-    
-    html = f"""
-    <div class="kpi-row animate-in delay-1">
-        <div class="kpi-card">
-            <div class="kpi-value" style="color: var(--primary-color);">{sources}</div>
-            <div class="micro-header">Sources Checked</div>
+    cells = [
+        ("Sources checked", sources, ""),
+        ("Engines used", f"{engines}<span class='t-meta'> / 6</span>", ""),
+        ("Unverified gaps", gaps, "is-warn" if gaps else ""),
+        ("Risk signals", risks, "is-bad" if risks else ""),
+    ]
+    body = "".join(
+        f'<div class="ledger-cell"><span class="t-kicker">{label}</span>'
+        f'<div class="ledger-value {cls}">{value}</div></div>'
+        for label, value, cls in cells
+    )
+    render_html(f'<div class="ledger rise" role="list">{body}</div>')
+
+
+def render_stance(sup: int, neu: int, con: int) -> str:
+    total = sup + neu + con
+    if not total:
+        return ""
+    widths = {k: v / total * 100 for k, v in (("sup", sup), ("neu", neu), ("con", con))}
+    return f"""
+        <div class="stance" aria-label="{sup} supporting, {neu} neutral, {con} contradicting sources">
+            <div class="stance-bar">
+                <span class="s-sup" style="width:{widths['sup']:.1f}%"></span>
+                <span class="s-neu" style="width:{widths['neu']:.1f}%"></span>
+                <span class="s-con" style="width:{widths['con']:.1f}%"></span>
+            </div>
+            <div class="stance-legend">
+                <span class="t-meta" style="--dot: var(--ok)">{sup} support</span>
+                <span class="t-meta" style="--dot: var(--line-strong)">{neu} neutral</span>
+                <span class="t-meta" style="--dot: var(--bad)">{con} contradict</span>
+            </div>
         </div>
-        <div class="kpi-card">
-            <div class="kpi-value">{engines}</div>
-            <div class="micro-header">Engines Used</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-value" style="color: {'var(--warning-color)' if gaps > 0 else 'var(--muted-text)'};">{gaps}</div>
-            <div class="micro-header">Unverified Gaps</div>
-        </div>
-        <div class="kpi-card">
-            <div class="kpi-value" style="color: {'var(--incorrect-color)' if risks > 0 else 'var(--teal-accent)'};">{risks}</div>
-            <div class="micro-header">Risk Signals</div>
-        </div>
-    </div>
     """
-    st.markdown(html, unsafe_allow_html=True)
 
 
-def render_finding_card(finding: dict, delay_class: str):
+def render_finding_card(finding: dict, index: int) -> None:
     status = finding.get("status", "UNKNOWN")
-    status_ui = status.replace("_", " ")
+    _, _, color_class = verdict_meta(status)
     
-    sup = len(finding.get("supporting_evidence", []))
-    con = len(finding.get("contradicting_evidence", []))
-    neu = len(finding.get("neutral_evidence", []))
-    total = sup + con + neu
-    
-    # Stance Bar percentages
-    p_sup = (sup / total * 100) if total else 0
-    p_con = (con / total * 100) if total else 0
-    p_neu = (neu / total * 100) if total else 0
-
-    stance_html = ""
-    if total > 0:
-        stance_html = f"""
-        <div class="stance-bar-container">
-            <div class="stance-sup" style="width: {p_sup}%;" title="{sup} Supporting"></div>
-            <div class="stance-neu" style="width: {p_neu}%;" title="{neu} Neutral"></div>
-            <div class="stance-con" style="width: {p_con}%;" title="{con} Contradicting"></div>
-        </div>
-        <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: var(--muted-text); margin-top: 4px;">
-            <span>{sup} Supports</span> <span>{con} Contradicts</span>
-        </div>
-        """
+    stance_html = render_stance(
+        len(finding.get("supporting_evidence", [])),
+        len(finding.get("neutral_evidence", [])),
+        len(finding.get("contradicting_evidence", [])),
+    )
 
     correction_html = ""
     if finding.get("correction"):
-        correction_html = f"<div style='margin-top: 12px; padding: 10px; background: rgba(255,101,119,0.1); border-radius: 8px; border-left: 3px solid var(--incorrect-color); color: var(--text-color);'><span class='micro-header' style='color: var(--incorrect-color);'>Correction</span>{finding.get('correction')}</div>"
+        correction_html = (
+            f'<div class="correction"><span class="t-kicker">Why this assessment?</span>'
+            f'<p class="t-body">{esc(finding["correction"])}</p></div>'
+        )
+    elif finding.get("summary"):
+        correction_html = (
+            f'<div class="correction"><span class="t-kicker">Why this assessment?</span>'
+            f'<p class="t-body">{esc(finding["summary"])}</p></div>'
+        )
 
     excerpt_html = ""
     excerpt = finding.get("evidence_excerpt")
-    url = finding.get("evidence_source_url")
-    title = finding.get("evidence_source_title") or url
     if excerpt:
-        link = f" &mdash; <a href='{url}' target='_blank'>{title}</a>" if url else ""
-        excerpt_html = f"<div style='margin-top: 16px; font-style: italic; color: var(--muted-text); border-left: 2px solid rgba(138,151,195,0.3); padding-left: 12px;'>\"{excerpt}\"{link}</div>"
+        url = finding.get("evidence_source_url")
+        title = finding.get("evidence_source_title") or url
+        source = (
+            f'<a href="{esc(url)}" target="_blank" rel="noopener noreferrer" class="source-link">{esc(title)} ↗</a>'
+            if url else "Source unavailable"
+        )
+        excerpt_html = (
+            f'<figure class="excerpt"><q>{esc(excerpt)}</q>'
+            f'<figcaption class="t-meta">— {source}</figcaption></figure>'
+        )
 
-    html = f"""
-    <div class="glass-panel animate-in {delay_class}" style="padding: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px;">
-            <div style="font-size: 1.1rem; font-weight: 600; line-height: 1.4;">{finding.get('claim_text', '')}</div>
-            <div class="status-badge {status}">{status_ui}</div>
-        </div>
-        <p class="muted-text" style="margin-bottom: 12px;">{finding.get('summary', '')}</p>
-        {stance_html}
-        {correction_html}
-        {excerpt_html}
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def render_report(report: dict):
-    overall = report.get("overall_status", "UNKNOWN")
-    overall_ui = overall.replace("_", " ")
-    
-    st.markdown(f"""
-    <div class="animate-in" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color);">
-        <div>
-            <span class="micro-header">Investigation Complete</span>
-            <h2 style="margin: 0; font-size: 1.8rem;" class="gradient-text">Final Outcome</h2>
-        </div>
-        <div class="status-badge {overall}" style="font-size: 1.2rem; padding: 10px 24px;">{overall_ui}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    tab_summary, tab_sources, tab_risks = st.tabs(["📋 Executive Summary", "📚 Evidence Tracker", "⚙️ Risks & Methodology"])
-
-    with tab_summary:
-        render_metrics(report)
-        st.markdown("<h3 class='gradient-text animate-in delay-2' style='margin-bottom: 16px;'>Claim-by-Claim Breakdown</h3>", unsafe_allow_html=True)
-        findings = report.get("claim_findings", [])
-        for i, finding in enumerate(findings):
-            delay = f"delay-{min(i+2, 4)}"
-            render_finding_card(finding, delay)
-
-    with tab_sources:
-        evidence = report.get("evidence_collection", [])
-        if not evidence:
-            st.info("No external sources were retrieved for this claim.")
-        else:
-            st.markdown(f"<p class='muted-text animate-in'>Tracking {len(evidence)} verified digital traces collected across search engines.</p>", unsafe_allow_html=True)
-            for i, ev in enumerate(evidence):
-                delay = f"delay-{min(i%3 + 1, 4)}"
-                src = ev.get("source", {})
-                stance = ev.get("stance", "NEUTRAL")
-                stance_class = "SUP" if stance == "SUPPORTING" else "CON" if stance == "CONTRADICTING" else "NEU"
-                stance_icon = "✅" if stance == "SUPPORTING" else "❌" if stance == "CONTRADICTING" else "➖"
-                
-                engine = ev.get("search_engine", "")
-                if engine == "GOOGLE_ADS": engine = "Google Ads Transparency Center"
-                
-                url = src.get("url", "#")
-                title = src.get("title", "Unknown Source")[:80]
-                date_str = f" • {src.get('publication_date')}" if src.get("publication_date") else ""
-                
-                html = f"""
-                <div class="source-card {stance_class} animate-in {delay}">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                        <span class="micro-header" style="margin:0;">{engine} {date_str}</span>
-                        <span style="font-size: 0.8rem; font-weight: 700; color: {'var(--teal-accent)' if stance=='SUPPORTING' else 'var(--incorrect-color)' if stance=='CONTRADICTING' else 'var(--muted-text)'};">{stance_icon} {stance}</span>
-                    </div>
-                    <a href="{url}" target="_blank" style="font-size: 1.05rem; font-weight: 600; display: block; margin-bottom: 8px;">{title}</a>
-                    <p class="muted-text" style="font-size: 0.9rem; margin: 0;">"{ev.get('passage', '')}"</p>
+    render_html(f"""
+        <article class="finding v-{color_class}">
+            <div class="finding-top">
+                <div>
+                    <span class="t-kicker">Sub-Claim {index:02d}</span>
+                    <div class="finding-claim">{esc(finding.get('claim_text', ''))}</div>
                 </div>
-                """
-                st.markdown(html, unsafe_allow_html=True)
+                {stamp(status)}
+            </div>
+            {correction_html}
+            {excerpt_html}
+            {stance_html}
+        </article>
+    """)
 
-    with tab_risks:
-        col_gaps, col_risks = st.columns(2)
-        with col_gaps:
-            gaps = report.get("evidence_gaps", [])
-            st.markdown("### 🔎 Unverified Claims")
-            if gaps:
-                for gap in gaps:
-                    st.markdown(f"<div class='glass-panel animate-in delay-1' style='padding: 16px; border-top: 3px solid var(--muted-text);'>"
-                                f"<div style='font-weight: 600; margin-bottom: 8px;'>{gap.get('claim_text', '')}</div>"
-                                f"<span class='muted-text'>{gap.get('gap_description', '')}</span></div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<p class='muted-text'>All parsed claims mapped to evidence.</p>", unsafe_allow_html=True)
 
-        with col_risks:
-            risks = report.get("risk_indicators", [])
-            st.markdown("### ⚠️ Risk Signals")
-            if risks:
-                for ri in risks:
-                    st.markdown(f"<div class='glass-panel animate-in delay-2' style='padding: 16px; border-top: 3px solid var(--warning-color);'>"
-                                f"<div style='font-weight: 600; margin-bottom: 8px;'>{ri.get('description', '')}</div>"
-                                f"<span class='muted-text'>{ri.get('explanation', '')}</span></div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<p class='muted-text'>No high-risk linguistic or verifiable patterns detected.</p>", unsafe_allow_html=True)
+def render_evidence(evidence: list) -> None:
+    if not evidence:
+        render_html('<div class="empty-note"><p class="t-muted">No external sources were retrieved for this claim.</p></div>')
+        return
+
+    rows = []
+    for i, ev in enumerate(evidence):
+        src = ev.get("source", {}) or {}
+        stance = ev.get("stance", "NEUTRAL")
+        engine = ENGINE_LABELS.get(ev.get("search_engine", ""), ev.get("search_engine", "") or "Web")
+        url = src.get("url") or "#"
         
-        st.markdown("---")
-        st.markdown("### ⚙️ Methodology & Limitations")
-        st.write(report.get("methodology_note", ""))
-        for lim in report.get("limitations", []):
-            st.markdown(f"- <span class='muted-text'>{lim}</span>", unsafe_allow_html=True)
+        # Determine source domain
+        from urllib.parse import urlparse
+        domain = ""
+        try:
+            if url != "#":
+                domain = urlparse(url).netloc.replace("www.", "")
+        except:
+            pass
+        
+        title = (src.get("title") or "Untitled source")[:110]
+        date = src.get("publication_date")
+        date_html = f'<span class="source-date">{esc(date)}</span>' if date else ""
+        
+        stance_class = STANCE_VERDICT_CLASS.get(stance, "UNVERIFIED")
+        _, _, color_class = verdict_meta(stance_class)
+        
+        rows.append(f"""
+            <div class="evidence-card v-{color_class}">
+                <div class="evidence-header">
+                    <div class="evidence-meta">
+                        <span class="evidence-badge v-{color_class}">{esc(STANCE_LABELS.get(stance, stance))}</span>
+                        <span class="evidence-domain">{esc(domain)}</span>
+                        <span class="t-meta">• {esc(engine)}</span>
+                        {date_html}
+                    </div>
+                </div>
+                <a class="evidence-title" href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(title)}</a>
+                <p class="evidence-passage">"{esc(ev.get('passage', ''))}"</p>
+                <div class="evidence-actions">
+                    <a href="{esc(url)}" target="_blank" rel="noopener noreferrer" class="btn-ghost">Open source ↗</a>
+                </div>
+            </div>
+        """)
+    render_html(
+        f'<div class="evidence-list-header"><span class="t-heading">Sources Examined</span><span class="t-meta">{len(evidence)} live sources</span></div>'
+        + '<div class="evidence-grid">' + "".join(rows) + '</div>'
+    )
 
 
-def set_claim(claim_text: str):
+def render_notes(items: list, title_key: str, body_key: str, risk: bool, empty_text: str) -> None:
+    if not items:
+        render_html(f'<div class="empty-note"><p class="t-muted">{esc(empty_text)}</p></div>')
+        return
+    cls = "note is-risk" if risk else "note"
+    render_html("".join(
+        f'<div class="{cls}"><div class="note-title">{esc(item.get(title_key, ""))}</div>'
+        f'<p class="t-muted">{esc(item.get(body_key, ""))}</p></div>'
+        for item in items
+    ))
+
+
+def render_report(report: dict, claim: str) -> None:
+    # 1 & 2 & 3: Claim, Assessment, Balance
+    render_verdict_header(report, claim)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Use a two-column layout for the rest of the report
+    # Left: Details & Evidence. Right: Methodology & Meta
+    col_main, col_side = st.columns([1.8, 1], gap="large")
+    
+    with col_main:
+        render_html('<div class="section-label mt-0"><span class="t-kicker">Detailed Breakdown</span></div>')
+        for i, finding in enumerate(report.get("claim_findings", []), start=1):
+            render_finding_card(finding, i)
+        
+        if not report.get("claim_findings"):
+            render_html('<div class="empty-note"><p class="t-muted">No detailed sub-claims found for this investigation.</p></div>')
+            
+        render_html('<div class="section-label"><span class="t-kicker">Evidence</span></div>')
+        render_evidence(report.get("evidence_collection", []))
+
+    with col_side:
+        render_html('<div class="section-label mt-0"><span class="t-kicker">Investigation Metadata</span></div>')
+        render_metrics(report)
+        
+        limits = "".join(f"<li>{esc(lim)}</li>" for lim in report.get("limitations", []))
+        render_html(f"""
+            <div class="methodology-card mb-4">
+                <div class="t-kicker mb-3">How this was generated</div>
+                <div class="method-steps">
+                    <span class="t-meta">🔎 Live web search</span>
+                    <span class="t-meta">🤖 AI-assisted analysis</span>
+                </div>
+                <p class="t-body mt-3">{esc(report.get('methodology_note', ''))}</p>
+                {f'<ul class="mt-2">{limits}</ul>' if limits else ''}
+                <div class="mt-4 pt-3" style="border-top: 1px dashed var(--line);">
+                    <span class="t-meta" style="color: var(--accent);">Powered by SerpApi (Search, Jobs, News, Maps, Forums, Ads)</span>
+                </div>
+            </div>
+        """)
+
+        if report.get("evidence_gaps"):
+            render_html('<div class="t-kicker mb-3">Unverified Claims</div>')
+            render_notes(report.get("evidence_gaps", []), "claim_text", "gap_description", False, "")
+            
+        if report.get("risk_indicators"):
+            render_html('<div class="t-kicker mb-3">Risk Signals</div>')
+            render_notes(report.get("risk_indicators", []), "description", "explanation", True, "")
+
+
+# ── Input UI ────────────────────────────────────────────────────────
+def set_claim(claim_text: str) -> None:
     st.session_state["claim_input"] = claim_text
+
+
+def render_masthead() -> None:
+    render_html("""
+        <header class="masthead rise">
+            <div class="logo-container">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M11 19C15.4183 19 19 15.4183 19 11C19 6.58172 15.4183 3 11 3C6.58172 3 3 6.58172 3 11C3 15.4183 6.58172 19 11 19Z" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M21.0004 20.9999L16.6504 16.6499" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M11 8V11L13 13" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h1 class="t-display">Trust<span class="brand-mark">Lens</span></h1>
+            </div>
+            <div class="masthead-deck">
+                <h2 class="hero-text">Investigate the evidence.</h2>
+                <p class="hero-subtext">Live web search • Evidence comparison • Traceable sources</p>
+            </div>
+        </header>
+    """)
+
+
+def render_input() -> tuple[str, bool]:
+    st.session_state.setdefault("claim_input", "")
+    
+    # Wrap in columns to constrain width and center it
+    spacer1, center_col, spacer2 = st.columns([1, 4, 1])
+    
+    with center_col:
+        render_html('<div class="input-header text-center"><span class="t-kicker">What claim do you want to investigate?</span></div>')
+        
+        claim = st.text_area(
+            "Claim under investigation",
+            key="claim_input",
+            height=130,
+            placeholder="Paste a claim, headline, statement, job offer, investment claim, policy statement, or other web-verifiable claim...",
+            label_visibility="collapsed",
+        )
+
+        investigate = st.button("Investigate Claim", type="primary", disabled=not claim.strip(), use_container_width=True)
+        
+        render_html('<div class="input-header text-center mt-5"><span class="t-kicker">Try an example</span></div>')
+        
+        # Tighter example cards
+        ex_cols = st.columns(3)
+        for i, (col, (tag, label, text)) in enumerate(zip(ex_cols, EXAMPLES)):
+            with col:
+                st.button(f"{tag}\n\n\"{label}\"", key=f"example_{tag}", on_click=set_claim, args=(text,), use_container_width=True)
+                
+        render_html(
+            '<div class="features-footer t-meta mt-5">'
+            'Powered by <span style="color: var(--accent); font-weight: 500;">SerpApi</span> • '
+            'Searches 6 Google Engines (Search, Jobs, News, Maps, Forums, Ads)'
+            '</div>'
+        )
+                
+    return claim, investigate
 
 
 # ── Main UI Assembly ───────────────────────────────────────────────
 def main():
     apply_custom_css()
+    render_masthead()
 
-    # Brand Header
-    st.markdown("""
-        <div class="animate-in" style="text-align: center; margin-top: 2rem; margin-bottom: 3rem;">
-            <h1 style="font-size: 3.5rem; letter-spacing: -1px; margin-bottom: 0;"><span class="brand-text">TrustLens</span></h1>
-            <p style="font-size: 1.25rem; font-weight: 300; margin-top: 8px;" class="gradient-text">Investigate digital claims with traceable evidence.</p>
-            <p class="muted-text" style="max-width: 600px; margin: 16px auto 0 auto;">
-                TrustLens autonomously searches live web data, normalizes evidence, and provides nuanced findings. 
-                It does not output a generic "trust score" — it lets the evidence speak.
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Config Check
     try:
         settings = TrustLensSettings()
         missing = [k for k, v in {"SERPAPI_API_KEY": settings.serpapi_api_key, "GEMINI_API_KEY": settings.gemini_api_key}.items() if not v or v.startswith("your_")]
@@ -430,54 +465,33 @@ def main():
         st.error("Could not load application settings.")
         return
 
-    # Input Section
-    st.markdown('<div class="glass-panel animate-in delay-1" style="max-width: 900px; margin: 0 auto;">', unsafe_allow_html=True)
-    claim = st.text_area(
-        "Enter a claim",
-        value=st.session_state.get("claim_input", ""),
-        height=140,
-        placeholder="Paste a job offer, investment claim, or company policy here...\n\ne.g., The SerpApi India Hackathon 2026 submission deadline is October 5, 2026.",
-        label_visibility="collapsed",
-    )
-    
-    col_empty, col_btn = st.columns([2, 1])
-    with col_btn:
-        investigate = st.button("Investigate Claim", type="primary", disabled=not claim.strip(), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    # Examples
-    st.markdown("<div class='animate-in delay-2' style='max-width: 900px; margin: 0 auto;'><span class='micro-header' style='margin-bottom: 12px; text-align: center;'>Try an example claim</span></div>", unsafe_allow_html=True)
-    ex_container = st.container()
-    with ex_container:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button("Hackathon rules limit teams to 3 members.", use_container_width=True): set_claim("SerpApi India Hackathon 2026 limits teams to 3 members.")
-        with c2:
-            if st.button("Crypto platform with guaranteed 30% returns.", use_container_width=True): set_claim("XYZ Corp launched a new crypto trading platform with guaranteed 30% monthly returns.")
-        with c3:
-            if st.button("Remote AI internship paying ₹150k/month.", use_container_width=True): set_claim("ABC Technologies is offering a remote AI internship for ₹150,000/month and guarantees placement.")
+    claim, investigate = render_input()
 
-    # Investigation Execution
     if investigate and claim.strip():
-        st.markdown("<hr>", unsafe_allow_html=True)
-        with st.status("Initializing Autonomous Investigation...", expanded=True) as status_widget:
+        section_label("Investigation log")
+        with st.status("Understanding the claim", expanded=True) as status_widget:
             try:
                 result = _run_investigation_sync(claim.strip(), settings, status_widget)
                 if result.get("report"):
-                    status_widget.update(label="Investigation Complete", state="complete")
+                    status_widget.update(label="Investigation complete", state="complete", expanded=False)
                     st.session_state["last_report"] = result["report"]
+                    st.session_state["last_claim"] = claim.strip()
                 else:
-                    status_widget.update(label="Investigation Incomplete", state="error")
-                    st.error(f"Error: We could not complete the investigation. Please try again.")
+                    status_widget.update(label="Investigation incomplete", state="error")
+                    st.error("We could not complete the investigation. Please try again.")
             except Exception as exc:
-                status_widget.update(label="Investigation Failed", state="error")
-                st.error("An error occurred during the investigation. Please check your network or API quota.")
-                logger.error(f"Investigation error: {exc}")
+                status_widget.update(label="Investigation failed", state="error")
+                st.error("Something went wrong during the investigation. Check your network connection or API quota, then try again.")
+                logger.exception("Investigation error: %s", exc)
 
-    # Render Report
     if "last_report" in st.session_state:
-        st.markdown("<hr>", unsafe_allow_html=True)
-        render_report(st.session_state["last_report"])
+        # If there's a report, show a "New Investigation" button at the top
+        if st.button("← New Investigation", key="new_investigation"):
+            del st.session_state["last_report"]
+            st.session_state["claim_input"] = ""
+            st.rerun()
+            
+        render_report(st.session_state["last_report"], st.session_state.get("last_claim", ""))
 
 
 if __name__ == "__main__":
