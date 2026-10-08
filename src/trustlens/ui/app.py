@@ -481,7 +481,7 @@ def main():
                     st.error("We could not complete the investigation. Please try again.")
             except Exception as exc:
                 status_widget.update(label="Investigation failed", state="error")
-                st.error("Something went wrong during the investigation. Check your network connection or API quota, then try again.")
+                st.error("Investigation temporarily unavailable. The reasoning service could not be reached. Please try again.")
                 logger.exception("Investigation error: %s", exc)
 
     if "last_report" in st.session_state:
