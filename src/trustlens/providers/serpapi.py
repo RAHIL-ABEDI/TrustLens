@@ -206,7 +206,8 @@ class SerpApiProvider:
                     f"SerpApi attempt {attempt + 1}/{self.MAX_RETRIES} failed: {exc}"
                 )
                 if attempt < self.MAX_RETRIES - 1:
-                    await asyncio.sleep(self.RETRY_DELAY_SECONDS)
+                    delay = self.RETRY_DELAY_SECONDS * (2 ** attempt)
+                    await asyncio.sleep(delay)
 
         raise SerpApiError(
             f"SerpApi search failed after {self.MAX_RETRIES} attempts: {last_error}"
