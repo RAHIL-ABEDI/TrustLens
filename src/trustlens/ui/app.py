@@ -18,10 +18,10 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Add project root to path
-_root = Path(__file__).resolve().parent.parent.parent.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
+# Add src directory to path so absolute imports like 'trustlens.config' work
+_src_dir = Path(__file__).resolve().parent.parent.parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
 
 from dotenv import load_dotenv
 load_dotenv()
