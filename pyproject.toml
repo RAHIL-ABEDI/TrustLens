@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "trustlens"
 version = "0.1.0"
 description = "TrustLens — Multi-Source Digital Trust Investigator"
-requires-python = ">=3.11"
+requires-python = ">=3.11, <4.0.0"
 dependencies = [
     "langgraph>=1.2",
     "pydantic>=2.0",
