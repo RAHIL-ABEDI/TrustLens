@@ -158,11 +158,22 @@ The user sees a full breakdown: which sources support the claim, which contradic
 
 ## 📸 Screenshots
 
-To see TrustLens in action, visit our **[Live Demo](https://trustlens-investigator.streamlit.app/)** or view the dashboard below:
+To see TrustLens in action, visit our **[Live Demo](https://trustlens-investigator.streamlit.app/)** or view the investigation walkthrough below:
 
-![TrustLens Dashboard](docs/screenshots/dashboard.png)
+### 1. Entering a Claim
+![Homepage](docs/screenshots/1_homepage.png)
+![Claim Entry](docs/screenshots/2_claim_entry.png)
 
-![Investigation Report](docs/screenshots/report.png)
+### 2. Autonomous Investigation Log
+![Log Parsing](docs/screenshots/3_log_parsing.png)
+![Log Searching](docs/screenshots/4_log_searching.png)
+![Log Classifying](docs/screenshots/5_log_classifying.png)
+
+### 3. Reviewing the Results
+![Result Summary](docs/screenshots/6_result_summary.png)
+![Evidence List 1](docs/screenshots/7_evidence_list.png)
+![Evidence List 2](docs/screenshots/8_evidence_list_continued.png)
+![Subclaim Metrics](docs/screenshots/9_subclaim_metrics.png)
 
 ---
 
