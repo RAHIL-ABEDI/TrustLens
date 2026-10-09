@@ -4,6 +4,7 @@
 
 > **Enter a claim. TrustLens investigates the live web, collects evidence from multiple sources, separates what supports it from what contradicts it, and delivers an evidence-backed assessment — not a black-box score.**
 
+**Live Demo:** [https://trustlens-investigator.streamlit.app/](https://trustlens-investigator.streamlit.app/)  
 **Track:** Knowledge & Public Interest  
 **Hackathon:** [SerpApi India Hackathon 2026](https://serpapi.com)
 
@@ -157,16 +158,11 @@ The user sees a full breakdown: which sources support the claim, which contradic
 
 ## 📸 Screenshots
 
-<!-- 
-  Screenshots are not currently included in the repository. 
-  To add screenshots, place them in a `docs/` or `assets/` directory and update the paths below.
--->
+To see TrustLens in action, visit our **[Live Demo](https://trustlens-investigator.streamlit.app/)** or view the dashboard below:
 
-<!-- Add screenshot of the main TrustLens dashboard here -->
-<!-- ![TrustLens Dashboard](docs/screenshots/dashboard.png) -->
+![TrustLens Dashboard](docs/screenshots/dashboard.png)
 
-<!-- Add screenshot of an investigation report here -->
-<!-- ![Investigation Report](docs/screenshots/report.png) -->
+![Investigation Report](docs/screenshots/report.png)
 
 ---
 
@@ -250,11 +246,11 @@ flowchart TD
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/trustlens.git
+git clone https://github.com/RAHIL-ABEDI/trustlens.git
 cd trustlens
 
 # 2. Install dependencies
-pip install -e .
+pip install -r requirements.txt
 
 # 3. Configure environment variables
 cp .env.example .env
